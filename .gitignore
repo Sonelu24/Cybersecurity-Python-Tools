@@ -1,6 +1,7 @@
 # Python cache
 __pycache__/
 *.pyc
+tempCodeRunnerFile.py
 
 # Generated reports / local logs
 *.csv

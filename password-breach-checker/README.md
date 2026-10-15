@@ -25,15 +25,23 @@ python breach_checker.py
 ```
 
 ## 📊 Example Output
+![Password Breach Checker demo](demo.png)
+
 ```
 === Password Breach Checker (k-anonymity, your password is never sent) ===
 Enter password to check (input hidden):
 
 Length            : 8 characters
-Estimated entropy : 37.6 bits (WEAK)
+Estimated entropy : 26.6 bits (WEAK)
 
-[!!] PWNED: this password was seen 52,256,179 times in data breaches.
+[!!] PWNED: this password was seen 70,606,130 times in data breaches.
      Do NOT use it. Pick a new, unique password (a password manager helps).
+```
+```
+Length            : 11 characters
+Estimated entropy : 72.1 bits (STRONG)
+
+[+] Good news: not found in any known breach.
 ```
 
 ## 🧠 What I Learned
