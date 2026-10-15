@@ -39,6 +39,8 @@ python log_analyzer.py /var/log/auth.log -t 10 -o report.csv
 | `--demo` | Run against the built-in sample log |
 
 ## 📊 Example Output
+![SSH Log Analyzer demo](demo.png)
+
 ```
 === SSH Log Analysis: built-in demo log ===
 Total failed attempts : 13
