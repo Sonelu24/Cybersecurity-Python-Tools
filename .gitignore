@@ -6,6 +6,7 @@ tempCodeRunnerFile.py
 # Generated reports / local logs
 *.csv
 *.log
+baseline.json
 
 # Secrets & environment
 .env
