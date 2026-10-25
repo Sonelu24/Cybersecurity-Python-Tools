@@ -11,6 +11,7 @@ baseline.json
 *.pcap
 FutureProjectsList.md
 banner.txt
+.agents/
 
 # Secrets & environment
 .env
