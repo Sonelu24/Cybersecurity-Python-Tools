@@ -12,6 +12,7 @@ I want to share with you some of the Python scripts I made. Feel free to contact
 | [🗂️ File Integrity Monitor](./file-integrity-monitor) | Detects added, modified and deleted files using SHA-256 baselines, like a mini Tripwire |
 | [📧 Phishing Email Analyzer](./phishing-email-analyzer) | Triages suspicious emails: SPF/DKIM/DMARC, spoofed senders, deceptive links and dangerous attachments |
 | [🗺️ Website Crawler & Site Mapper](./site-mapper) | Crawls a website to build a visual page tree and map forms, sensitive paths, files and broken links |
+| [🕵️‍♂️ PCAP Network Packet Threat Hunter](./pcap-threat-hunter) | Parses raw `.pcap` captures at the byte level to detect SYN port scans, ARP spoofing, DNS tunneling and cleartext credentials |
 
 ## 🛠️ Skills Shown
 - Python (standard library, `argparse`, regex, hashing)
@@ -21,6 +22,7 @@ I want to share with you some of the Python scripts I made. Feel free to contact
 - Host-based intrusion detection (file integrity monitoring)
 - Email security and phishing triage (SPF, DKIM, DMARC, IOC handling)
 - Web reconnaissance and attack-surface mapping (crawling, `robots.txt`, entry points)
+- Network packet forensics (`.pcap` binary parsing, TCP/IP/DNS/ARP analysis, entropy detection)
 
 ## 📬 Contact
 - LinkedIn: https://www.linkedin.com/in/alexandru-mocanu-ba831b234/

@@ -30,14 +30,22 @@ from urllib.parse import urldefrag, urljoin, urlparse, urlunparse
 
 USER_AGENT = "SiteMapper/1.0 (security portfolio project)"
 BANNER = r"""
-  #####    #####   #     #  #######  #        #     #
- #     #  #     #  ##    #  #        #        #     #
- #        #     #  # #   #  #        #        #     #
-  #####   #     #  #  #  #  #####    #        #     #
-       #  #     #  #   # #  #        #        #     #
- #     #  #     #  #    ##  #        #        #     #
-  #####    #####   #     #  #######  #######   #####
-           [ Site Mapper & Hidden Path Finder ]
+                   :                                                           
+           .      t#,      L.                      ,;                   :      
+          ;W     ;##W.     EW:        ,ft        f#i              i     Ef     
+         f#E    :#L:WE     E##;       t#E      .E#t              LE     E#t    
+       .E#f    .KG  ,#D    E###t      t#E     i#W,              L#E     E#t    
+      iWW;     EE    ;#f   E#fE#f     t#E    L#D.              G#W.     E#t    
+     L##Lffi  f#.     t#i  E#t D#G    t#E  :K#Wfff;           D#K.      E#t fi 
+    tLLG##L   :#G     GK   E#t  f#E.  t#E  i##WLLLLt         E#K.       E#t L#j
+      ,W#i     ;#L   LW.   E#t   t#K: t#E   .E#L           .E#E.        E#t L#L
+     j#E.       t#f f#:    E#t    ;#W,t#E     f#E:        .K#E          E#tf#E:
+   .D#j          f#D#;     E#t     :K#D#E      ,WW;      .K#D           E###f  
+  ,WK,            G#t      E#t      .E##E       .D#;    .W#G            E#K,   
+  EG.              t       ..         G#E         tt   :W##########Wt   EL     
+  ,                                    fE              :,,,,,,,,,,,,,.  :      
+                                        ,                                      
+                      [ Site Mapper & Hidden Path Finder ]
 """
 MAX_BYTES = 2_000_000
 FILE_EXT = {".pdf", ".zip", ".rar", ".7z", ".tar", ".gz", ".doc", ".docx", ".xls", ".xlsx",

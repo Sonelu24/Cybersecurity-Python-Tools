@@ -8,6 +8,9 @@ tempCodeRunnerFile.py
 *.log
 baseline.json
 *.eml
+*.pcap
+FutureProjectsList.md
+banner.txt
 
 # Secrets & environment
 .env
