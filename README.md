@@ -15,6 +15,7 @@ I want to share with you some of the Python scripts I made. Feel free to contact
 | [🕵️‍♂️ PCAP Network Packet Threat Hunter](./pcap-threat-hunter) | Parses raw `.pcap` captures at the byte level to detect SYN port scans, ARP spoofing, DNS tunneling and cleartext credentials |
 | [📦 CVE Dependency & Supply-Chain Scanner](./cve-dependency-scanner) | Audits `requirements.txt` and `package.json` against the live OSV.dev database for known CVEs, severities and fix versions |
 | [🧬 Static Malware & File Triage Scanner](./malware-triage-scanner) | Inspects suspicious files statically via magic bytes, Shannon entropy and YARA-style API/string indicators |
+| [🔎 IOC Extractor & Defanger](./ioc-extractor) | Extracts IPs, domains, URLs, emails, hashes, CVEs and MITRE ATT&CK tags from raw logs/text and defangs/refangs them for safe SOC sharing |
 
 ## 🛠️ Skills Shown
 - Python (standard library, `argparse`, regex, hashing)
@@ -27,6 +28,7 @@ I want to share with you some of the Python scripts I made. Feel free to contact
 - Network packet forensics (`.pcap` binary parsing, TCP/IP/DNS/ARP analysis, entropy detection)
 - Vulnerability management and supply-chain security (CVE auditing via OSV.dev, OWASP A06)
 - Static malware triage and incident response (magic bytes, Shannon entropy, PE/API indicators)
+- Cyber threat intelligence (CTI) and IOC parsing/defanging for SOC workflows
 
 ## 📬 Contact
 - LinkedIn: https://www.linkedin.com/in/alexandru-mocanu-ba831b234/
