@@ -18,6 +18,7 @@ I want to share with you some of the Python scripts I made. Feel free to contact
 | [🔎 IOC Extractor & Defanger](./ioc-extractor) | Extracts IPs, domains, URLs, emails, hashes, CVEs and MITRE ATT&CK tags from raw logs/text and defangs/refangs them for safe SOC sharing |
 | [🔑 JWT Security Auditor](./jwt-security-auditor) | Decodes JSON Web Tokens, flags `alg: none`, claim/lifetime flaws and leaked secrets, and audits weak HMAC signing keys |
 | [🔒 TLS & Certificate Security Inspector](./tls-cert-inspector) | Audits HTTPS endpoints for certificate expiry, SAN subdomains, issuer chains, TLS protocol versions and weak cipher suites |
+| [🐚 PHP2Shell Log & Web Shell Detector](./php2shell-detector) | Hunts for October 2026 **PHP2Shell** (`CVE-2026-109618` / `CVE-2026-109619`) exploitation in Apache/PHP logs and detects dropped PHP web shells |
 
 ## 🛠️ Skills Shown
 - Python (standard library, `argparse`, regex, hashing)
@@ -33,6 +34,7 @@ I want to share with you some of the Python scripts I made. Feel free to contact
 - Cyber threat intelligence (CTI) and IOC parsing/defanging for SOC workflows
 - API authentication security and token auditing (JWT RFC 7519, HMAC verification, OWASP API2:2023)
 - Transport layer cryptography and X.509 certificate auditing (TLS 1.2/1.3, Forward Secrecy, SAN recon)
+- Rapid-response emerging threat detection (PHP2Shell `CVE-2026-109618` / `CVE-2026-109619` log correlation & web shell hunting)
 
 ## 📬 Contact
 - LinkedIn: https://www.linkedin.com/in/alexandru-mocanu-ba831b234/
