@@ -49,14 +49,22 @@ SSH_SUCCESS_RE = re.compile(
     r"Accepted (?:password|publickey) for (?P<user>\S+) from (?P<ip>\d{1,3}(?:\.\d{1,3}){3})"
 )
 
-# Windows Security Event Log (Event ID 4625 Failed Logon / 4624 Successful Logon)
-WIN_EVENT_RE = re.compile(
-    r"(?P<ts>\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2})?.*?"
-    r"EventID[=:\s]+(?P<eid>4625|4624).*?"
-    r"(?:Account Name|TargetUserName)[=:\s\"']+(?P<user>[A-Za-z0-9_.\-$]+).*?"
-    r"(?:Source Network Address|IpAddress)[=:\s\"']+(?P<ip>\d{1,3}(?:\.\d{1,3}){3})",
-    re.IGNORECASE,
+# Windows Security Event Log (Event ID 4625 Failed Logon / 4624 Successful Logon — Key/Value & XML)
+WIN_EID_RE = re.compile(r"(?:EventID[=:\s>\"']+|</?EventID>)(?P<eid>4625|4624)\b", re.IGNORECASE)
+WIN_USER_RE = re.compile(
+    r"(?:Account Name|TargetUserName)[\"=:\s>']+(?P<user>[A-Za-z0-9_.\-$]+)", re.IGNORECASE
 )
+WIN_IP_RE = re.compile(
+    r"(?:Source Network Address|IpAddress)[\"=:\s>']+(?P<ip>\d{1,3}(?:\.\d{1,3}){3})", re.IGNORECASE
+)
+ISO_TS_RE = re.compile(r"(?P<ts>\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2})")
+SYSLOG_TS_RE = re.compile(
+    r"^(?P<mon>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(?P<day>\d{1,2})\s+(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2})"
+)
+MONTH_MAP = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
 
 # Built-in hybrid Linux sshd + Windows Event ID 4625/4624 sample log for --demo
 DEMO_LOG = """\
@@ -91,16 +99,23 @@ OFFLINE_GEO_MAP = {
 
 
 def parse_timestamp(ts_str: str | None) -> float | None:
-    """Converts syslog ('Oct 15 10:01:01') or ISO timestamps into epoch seconds."""
+    """Converts syslog ('Oct 15 10:01:01') or ISO timestamps into epoch seconds (Python 3.10–3.15+ safe)."""
     if not ts_str:
         return None
     ts_str = ts_str.strip()
-    for fmt in ("%b %d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+    if m := SYSLOG_TS_RE.match(ts_str):
+        dt = datetime(
+            2026,
+            MONTH_MAP[m["mon"]],
+            int(m["day"]),
+            int(m["h"]),
+            int(m["m"]),
+            int(m["s"]),
+        )
+        return dt.timestamp()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
-            dt = datetime.strptime(ts_str, fmt)
-            if dt.year == 1900:
-                dt = dt.replace(year=2026)
-            return dt.timestamp()
+            return datetime.strptime(ts_str[:19], fmt).timestamp()
         except ValueError:
             continue
     return None
@@ -153,13 +168,17 @@ def parse_lines(lines: list[str]) -> dict:
     successes: list[tuple[str, str, str]] = []
 
     for line in lines:
-        if m := WIN_EVENT_RE.search(line):
-            ip, user, eid = m["ip"], m["user"], m["eid"]
+        eid_m = WIN_EID_RE.search(line)
+        user_m = WIN_USER_RE.search(line)
+        ip_m = WIN_IP_RE.search(line)
+        if eid_m and user_m and ip_m:
+            ip, user, eid = ip_m["ip"], user_m["user"], eid_m["eid"]
             sources_by_ip[ip].add(f"WinEvent:{eid}")
+            ts_m = ISO_TS_RE.search(line)
             if eid == "4625":
                 failed[ip] += 1
                 failed_users[ip].add(user)
-                if (epoch := parse_timestamp(m["ts"])) is not None:
+                if ts_m and (epoch := parse_timestamp(ts_m["ts"])) is not None:
                     failed_times[ip].append(epoch)
             else:
                 successes.append((ip, user, "WinEvent:4624"))
@@ -265,8 +284,8 @@ def main() -> int:
 
     flagged_rows = []
     for ip, count in sorted(failed.items(), key=lambda x: -x[1]):
-        burst = max_burst_in_window(failed_times[ip], args.window) or count
-        if count >= args.threshold or burst >= args.threshold:
+        burst = max_burst_in_window(failed_times[ip], args.window) if failed_times[ip] else count
+        if burst >= args.threshold:
             users_sorted = sorted(failed_users[ip])
             tactic = "T1110.003 Password Spray" if len(users_sorted) >= 4 else "T1110.001 Brute Force"
             flagged_rows.append({
