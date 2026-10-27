@@ -7,13 +7,13 @@ I want to share with you some of the Python scripts I made. Feel free to contact
 | Project | Description |
 |---|---|
 | [🔍 SSH & Auth Log Analyzer](./ssh-log-analyzer) | Detects SSH & Windows (`4625`/`4624`) brute-force bursts, password spraying and post-attack account compromise |
-| [🔐 Password Breach Checker](./password-breach-checker) | Checks whether a password has been leaked in data breaches, privately, using k-anonymity |
+| [🔐 Password Breach Checker](./password-breach-checker) | Audits single or batch (`-f`) passwords via HIBP k-anonymity, detects keyboard walks/leetspeak patterns, and generates CSRNG passwords/Diceware passphrases |
 | [🌐 Web Security Header Scanner](./security-header-scanner) | Audits HTTP security headers, HSTS preload readiness, CORS reflection, TLS posture and cookie flags (Grade A–F) |
 | [🗂️ File Integrity Monitor](./file-integrity-monitor) | Detects file & permission tampering using `HMAC-SHA256` signed baselines, ignore rules and webhook alerts |
 | [📧 Phishing Email Analyzer](./phishing-email-analyzer) | Triages `.eml` emails with PSL domain checks, SPF/DKIM/DMARC, HTML `<form>`/pixel traps, attachment hashing and IOC export |
 | [🗺️ Website Crawler & Site Mapper](./site-mapper) | Crawls websites, extracts JS bundle API routes/secrets, filters SPA Soft-404s and probes hidden endpoints |
 | [🕵️‍♂️ PCAP Network Packet Threat Hunter](./pcap-threat-hunter) | Parses `.pcap` & `.pcapng` (IPv4/IPv6) captures with TCP stream reassembly to detect SYN scans, ARP spoofing, DNS/ICMP tunneling, C2 beacons and cleartext credentials |
-| [📦 CVE Dependency & Supply-Chain Scanner](./cve-dependency-scanner) | Audits `requirements.txt` and `package.json` against the live OSV.dev database for known CVEs, severities and fix versions |
+| [📦 CVE Dependency & Supply-Chain Scanner](./cve-dependency-scanner) | Audits 6 Python/Node manifest & lockfile formats against OSV.dev with CVSS v3.1 scoring, auto-remediation and SARIF 2.1.0 export |
 | [🧬 Static Malware & File Triage Scanner](./malware-triage-scanner) | Inspects files & folders via magic bytes, PE section table (`RWX`/packer) entropy, API indicators, PDB/Registry IOCs and auto-YARA generation |
 | [🔎 IOC Extractor & Defanger](./ioc-extractor) | Extracts 11 classes of IOCs (IPs, URLs, hashes, Registry keys, file paths, BTC/XMR wallets, CVEs, MITRE tags) and exports OASIS STIX 2.1 bundles |
 | [🔑 JWT Security Auditor](./jwt-security-auditor) | Decodes JSON Web Tokens, flags `alg: none`, claim/lifetime flaws and leaked secrets, and audits weak HMAC signing keys |
