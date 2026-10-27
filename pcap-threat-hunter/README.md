@@ -1,15 +1,17 @@
 # 🕵️‍♂️ PCAP Network Packet Threat Hunter
 
-A Python network forensics tool that parses binary `.pcap` packet captures at the **raw byte level** (Ethernet, ARP, IPv4, TCP, UDP, DNS) without requiring Wireshark or third-party libraries, and hunts for **four classes of network attacks**.
+A Python network forensics tool that parses binary `.pcap` and Next-Generation **`.pcapng`** packet captures at the **raw byte level** (Ethernet, ARP, IPv4, IPv6, TCP, UDP, ICMP/ICMPv6, DNS) without requiring Wireshark or third-party libraries, and hunts for **six classes of network attacks**.
 
 ## ✨ Features
-- **Zero-dependency binary `.pcap` parser:** unpacks Ethernet frames, ARP packets, IPv4 headers, TCP flags (`SYN`, `ACK`), UDP datagrams, and DNS query labels using Python's `struct` module
-- **4 Built-in Threat Detections:**
-  1. **TCP SYN Port Scans:** spots hosts sending `SYN`-only packets across many distinct ports on a target
-  2. **ARP Spoofing / Cache Poisoning:** alerts when multiple MAC addresses claim the same IPv4 address (e.g., an attacker impersonating the default gateway)
-  3. **DNS Tunneling / Exfiltration:** calculates **Shannon entropy** on DNS query labels to flag long, base64/hex-encoded subdomains used for C2 or data exfiltration
-  4. **Cleartext Credentials in Transit:** extracts unencrypted HTTP Basic Auth headers, HTTP `POST` login bodies (`username`/`password`), and FTP `USER`/`PASS` commands
-- **Built-in `--demo` capture generator:** builds a valid binary `.pcap` in memory containing normal traffic plus all 4 simulated attacks (and can export it with `--save-demo sample.pcap` so you can inspect it in Wireshark!)
+- **Zero-Dependency Binary `.pcap` & `.pcapng` Parser:** Unpacks classic `.pcap` (microsecond/nanosecond) and Next-Gen `.pcapng` blocks (`SHB`, `IDB`, `EPB`, `SPB`), Ethernet frames, ARP packets, **IPv4 and IPv6 (`0x86DD`) headers**, TCP sequence streams, UDP datagrams, ICMP/ICMPv6, and DNS wire labels using Python's `struct` module
+- **6 Built-in Threat Detections:**
+  1. **TCP SYN Port Scans (`MITRE T1046`):** Spots hosts sending `SYN`-only packets across many distinct ports on a target
+  2. **ARP Spoofing / Cache Poisoning (`MITRE T1557.002`):** Alerts when multiple MAC addresses claim the same IPv4 address
+  3. **DNS Tunneling / Exfiltration (`MITRE T1071.004`):** Calculates **Shannon entropy** on DNS query labels to flag long, base64/hex-encoded subdomains used for C2 or exfiltration
+  4. **ICMP / ICMPv6 Covert Tunneling (`MITRE T1095`):** Flags oversized Echo Request/Reply payloads (`> 64 bytes`) and high-entropy covert data inside ping traffic
+  5. **Cleartext Credentials via Multi-Packet TCP Stream Reassembly (`MITRE T1040`):** Reassembles fragmented and out-of-order TCP segments by sequence number (`seq`) to catch HTTP Basic Auth, HTTP `POST` logins, and FTP `USER`/`PASS` credentials split across multiple packets
+  6. **Periodic C2 Beaconing Detection (`MITRE T1071.001`):** Analyzes inter-arrival intervals and jitter across flows to spot automated C2 heartbeats
+- **JSON Threat Report Export (`-o`) & Built-in `--demo` Generator:** Exports machine-readable findings to JSON and can write the built-in simulated capture to disk (`--save-demo sample.pcap`) for inspection in Wireshark
 
 ## 🎯 MITRE ATT&CK Mapping
 | Detection | Technique | ID |
@@ -17,7 +19,9 @@ A Python network forensics tool that parses binary `.pcap` packet captures at th
 | TCP SYN Port Scan | Network Service Discovery | [T1046](https://attack.mitre.org/techniques/T1046/) |
 | ARP Spoofing | Adversary-in-the-Middle: ARP Cache Poisoning | [T1557.002](https://attack.mitre.org/techniques/T1557/002/) |
 | DNS Tunneling | Application Layer Protocol: DNS | [T1071.004](https://attack.mitre.org/techniques/T1071/004/) |
+| ICMP Covert Tunneling | Non-Application Layer Protocol | [T1095](https://attack.mitre.org/techniques/T1095/) |
 | Cleartext Credentials | Network Sniffing | [T1040](https://attack.mitre.org/techniques/T1040/) |
+| Periodic C2 Beaconing | Application Layer Protocol: Web Protocols | [T1071.001](https://attack.mitre.org/techniques/T1071/001/) |
 
 ## 🚀 Usage
 Requires **Python 3.10+**.
@@ -26,8 +30,8 @@ Requires **Python 3.10+**.
 # Run against the built-in simulated attack capture
 python pcap_hunter.py --demo
 
-# Analyze a real Wireshark / tcpdump .pcap file
-python pcap_hunter.py capture.pcap
+# Analyze a real Wireshark / tcpdump .pcap or .pcapng file and export JSON report
+python pcap_hunter.py capture.pcapng -o report.json
 
 # Custom port-scan threshold (default: 10 ports)
 python pcap_hunter.py capture.pcap -t 20
@@ -38,37 +42,23 @@ python pcap_hunter.py --save-demo demo_traffic.pcap
 
 | Option | Description |
 |---|---|
-| `pcap` | Path to a `.pcap` file to analyze |
-| `-t`, `--threshold` | Distinct ports before flagging a SYN scan (default: 10) |
-| `--demo` | Run against the built-in simulated `.pcap` capture |
+| `pcap` | Path to a `.pcap` or `.pcapng` file to analyze |
+| `-t`, `--threshold` | Distinct ports before flagging a SYN scan (default: `10`) |
+| `-o`, `--output` | Export threat hunt findings to a JSON report file |
+| `--demo` | Run against the built-in simulated capture |
 | `--save-demo FILE` | Save the built-in demo capture to disk (compatible with Wireshark) |
 
 ## 📊 Example Output
 ![PCAP Network Packet Threat Hunter demo](demo.png)
 
-```
-                   :                                                           
-           .      t#,      L.                      ,;                   :      
-          ;W     ;##W.     EW:        ,ft        f#i              i     Ef     
-         f#E    :#L:WE     E##;       t#E      .E#t              LE     E#t    
-       .E#f    .KG  ,#D    E###t      t#E     i#W,              L#E     E#t    
-      iWW;     EE    ;#f   E#fE#f     t#E    L#D.              G#W.     E#t    
-     L##Lffi  f#.     t#i  E#t D#G    t#E  :K#Wfff;           D#K.      E#t fi 
-    tLLG##L   :#G     GK   E#t  f#E.  t#E  i##WLLLLt         E#K.       E#t L#j
-      ,W#i     ;#L   LW.   E#t   t#K: t#E   .E#L           .E#E.        E#t L#L
-     j#E.       t#f f#:    E#t    ;#W,t#E     f#E:        .K#E          E#tf#E:
-   .D#j          f#D#;     E#t     :K#D#E      ,WW;      .K#D           E###f  
-  ,WK,            G#t      E#t      .E##E       .D#;    .W#G            E#K,   
-  EG.              t       ..         G#E         tt   :W##########Wt   EL     
-  ,                                    fE              :,,,,,,,,,,,,,.  :      
-                                        ,                                      
-                     [ PCAP Network Packet Threat Hunter ]
+```text
+                   [ PCAP Network Packet Threat Hunter v2.0 ]
 
-=== PCAP Threat Hunt Report: built-in demo capture ===
-
-  Total packets   : 23
-  Protocols       : TCP: 19, UDP: 2, DNS: 2, ARP: 2
-  Top talkers     : 203.0.113.50 (15), 192.168.1.10 (6)
+[*] Capture Source  : built-in demo capture (PCAP)
+[*] Total Packets   : 25  |  Reassembled TCP Streams: 2
+[*] Protocols       : IPv4: 22, TCP: 20, UDP: 2, DNS: 2, ARP: 2, IPv6: 1, ICMP: 1
+[*] Top Talkers     : 203.0.113.50 (15), 192.168.1.10 (7), 2001:db8::10 (1)
+==============================================================================
 
   [1] Port Scan Detection (MITRE T1046):
   [ALERT] SYN scan from 203.0.113.50 -> 192.168.1.10: 15 ports probed (21, 22, 23, 25, 53, 80, 110, 139, ... (+7 more))
@@ -79,20 +69,28 @@ python pcap_hunter.py --save-demo demo_traffic.pcap
   [3] DNS Tunneling / Exfiltration (MITRE T1071.004):
   [ALERT] 192.168.1.10 queried high-entropy subdomain (50 chars, 4.51 bits): aGVsbG8tdGhpcy1pcy1leGZpbHRyYXRlZC1zZWNyZXQtZGF0YQ.c2-t
 
-  [4] Cleartext Credentials on the Wire (MITRE T1040):
+  [4] ICMP / ICMPv6 Covert Tunneling (MITRE T1095):
+  [ALERT] Oversized ICMP Echo tunnel 192.168.1.10 -> 198.51.100.77 (81 bytes payload, 5.47 bits entropy)
+
+  [5] Cleartext Credentials via TCP Stream Reassembly (MITRE T1040):
   [ALERT] HTTP POST Login  192.168.1.10 -> 192.168.1.25:80  (user='admin' pass='Spring2026!Secret')
   [ALERT] FTP Cleartext    192.168.1.10 -> 192.168.1.30:21  (USER backup_svc)
   [ALERT] FTP Cleartext    192.168.1.10 -> 192.168.1.30:21  (PASS Backup#9921)
 
-  SUMMARY: 23 packets analyzed   VERDICT: 6 THREAT INDICATOR(S) DETECTED
+==============================================================================
+  SUMMARY: 25 packets (PCAP)   |   VERDICT: 7 THREAT INDICATOR(S) DETECTED
+==============================================================================
 ```
 
 ## 🧠 What I Learned
-- How `.pcap` global headers (`24 bytes`) and packet headers (`16 bytes`) are structured in binary
-- Unpacking raw Ethernet (`14 bytes`), IPv4 (`IHL`), TCP (`flags` byte), ARP, and DNS wire-format length-prefixed labels
-- How SOC analysts spot **DNS tunneling** using subdomain length and Shannon entropy rather than static domain blocklists
+- How classic `.pcap` headers (`24 bytes` + `16-byte` packet records) differ from Next-Gen `.pcapng` block structures (`SHB`, `IDB`, `EPB`)
+- Unpacking raw Ethernet (`14 bytes`), IPv4 (`IHL`), IPv6 (`40-byte` fixed header + `inet_ntop`), TCP sequence numbers, ARP, ICMP/ICMPv6, and DNS wire labels
+- Why TCP sequence-number stream reassembly is essential in network forensics: credentials or HTTP payloads split across multiple TCP segments evade single-packet inspection
 
-## 🛣️ Future Improvements
-- Support `.pcapng` format and IPv6 headers
-- Detect ICMP tunneling and unusual payload sizes
-- Reassemble full TCP streams across multiple packets
+## 🔄 Version History & Changelog (v1.0 → v2.0)
+- **v1.0 (Initial Release):** Classic `.pcap` & IPv4 byte-level parser with single-packet detection for TCP SYN port scans, ARP spoofing, DNS tunneling (Shannon entropy), and cleartext HTTP/FTP credentials.
+- **v2.0:**
+  - Added **Next-Generation `.pcapng` Format & IPv6 (`0x86DD`) Support** so modern Wireshark default captures and dual-stack IPv6 networks are parsed natively.
+  - Added **ICMP / ICMPv6 Covert Tunneling Detection (`MITRE T1095`)** to flag oversized Echo Request/Reply payloads (`> 64 bytes`) and high-entropy exfiltration data inside ping packets.
+  - Added **Multi-Packet TCP Stream Sequence Reassembly** (`seq`-ordered stream stitching per 4-tuple flow) to catch credentials and HTTP requests split or reordered across multiple TCP segments.
+  - Added **Periodic C2 Beaconing / Heartbeat Detection (`MITRE T1071.001`)** and **JSON Threat Report Export (`-o`)**.
