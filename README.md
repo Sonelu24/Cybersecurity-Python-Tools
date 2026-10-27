@@ -6,10 +6,10 @@ I want to share with you some of the Python scripts I made. Feel free to contact
 
 | Project | Description |
 |---|---|
-| [🔍 SSH Log Analyzer](./ssh-log-analyzer) | Finds SSH brute-force attacks in Linux auth logs and alerts on possible account compromise |
+| [🔍 SSH & Auth Log Analyzer](./ssh-log-analyzer) | Detects SSH & Windows (`4625`/`4624`) brute-force bursts, password spraying and post-attack account compromise |
 | [🔐 Password Breach Checker](./password-breach-checker) | Checks whether a password has been leaked in data breaches, privately, using k-anonymity |
 | [🌐 Web Security Header Scanner](./security-header-scanner) | Grades a website's HTTP security headers, cookie flags and information leaks (A–F) |
-| [🗂️ File Integrity Monitor](./file-integrity-monitor) | Detects added, modified and deleted files using SHA-256 baselines, like a mini Tripwire |
+| [🗂️ File Integrity Monitor](./file-integrity-monitor) | Detects file & permission tampering using `HMAC-SHA256` signed baselines, ignore rules and webhook alerts |
 | [📧 Phishing Email Analyzer](./phishing-email-analyzer) | Triages suspicious emails: SPF/DKIM/DMARC, spoofed senders, deceptive links and dangerous attachments |
 | [🗺️ Website Crawler & Site Mapper](./site-mapper) | Crawls a website to build a visual page tree and map forms, sensitive paths, files and broken links |
 | [🕵️‍♂️ PCAP Network Packet Threat Hunter](./pcap-threat-hunter) | Parses raw `.pcap` captures at the byte level to detect SYN port scans, ARP spoofing, DNS tunneling and cleartext credentials |

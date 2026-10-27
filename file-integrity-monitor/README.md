@@ -1,77 +1,95 @@
 # 🗂️ File Integrity Monitor
 
-A Python tool that detects when files are **added, modified or deleted** in a folder. It saves a SHA-256 fingerprint ("baseline") of every file, then compares the folder against it later to spot tampering. This is the same idea behind tools like **Tripwire, OSSEC and Wazuh**.
+A Python tool that detects when files are **added, modified, permission-changed, or deleted** in a folder. It saves a cryptographic SHA-256 fingerprint ("baseline") of every file—optionally signed with **`HMAC-SHA256`** so tampering with `baseline.json` itself is caught immediately—and compares the folder against it later to spot intrusion artifacts. This is the core mechanism behind host-based intrusion detection systems (HIDS) like **Tripwire, OSSEC, and Wazuh**.
 
 ## ✨ Features
-- SHA-256 hashing of every file, including subfolders
-- Detects **added**, **modified** and **deleted** files
-- `watch` mode keeps checking and alerts the moment something changes
-- Exit code `2` when changes are found, so it can be used in scripts or scheduled tasks
-- Built-in `demo` that simulates an attack on a temporary folder
-- Pure Python standard library, nothing to install
+- **SHA-256 File Fingerprinting & Metadata Tracking:** Hashes every file in chunks and records permissions (`mode`), file size, and modification timestamps (`mtime`)
+- **Tamper-Proof `HMAC-SHA256` Signed Baselines (`-k / --key`):** Signs `baseline.json` with a secret key (or `FIM_SECRET_KEY` env var) and raises a critical alert if an attacker edits the baseline to hide their tracks
+- **Ignore Rules (`--ignore` & `.fimignore`):** Supports glob patterns (`*.tmp`, `*.log`, `cache/*`, `__pycache__/*`) via CLI flags or a `.fimignore` file in the monitored folder
+- **Live Webhook Alerting (`--webhook`) & JSON Export (`-o`):** Dispatches real-time alerts to Discord, Slack, or Microsoft Teams webhooks and exports machine-readable JSON integrity reports
+- **Continuous `watch` Mode:** Polls at a configurable interval and alerts the moment files or permissions change
+- **Built-in `--demo` Mode:** Simulates a multi-stage web server intrusion and baseline-tampering test in a temporary directory
+- **Zero External Dependencies:** Pure Python standard library (`hashlib`, `hmac`, `fnmatch`, `urllib.request`)
 
 ## 🎯 MITRE ATT&CK Mapping
 | What it can catch | Technique | ID |
 |---|---|---|
-| Changed config files | Stored Data Manipulation | [T1565.001](https://attack.mitre.org/techniques/T1565/001/) |
+| Changed config files or tampered baselines | Stored Data Manipulation | [T1565.001](https://attack.mitre.org/techniques/T1565/001/) |
 | Web shells dropped on a server | Server Software Component: Web Shell | [T1505.003](https://attack.mitre.org/techniques/T1505/003/) |
+| Suspicious `chmod` / SUID permission changes | File and Directory Permissions Modification | [T1222](https://attack.mitre.org/techniques/T1222/) |
 | Deleted logs | Indicator Removal: File Deletion | [T1070.004](https://attack.mitre.org/techniques/T1070/004/) |
 
 ## 🚀 Usage
-Requires **Python 3.8+**.
+Requires **Python 3.10+**.
 
 ```bash
-# See it in action (simulated attack on a temporary folder)
-python fim.py demo
+# Run the built-in simulated attack & HMAC anti-tamper demo
+python fim.py --demo
 
-# 1. Create a baseline of a folder
-python fim.py baseline C:\path\to\folder
+# 1. Create an HMAC-signed baseline while ignoring *.tmp and cache/*
+python fim.py baseline C:\path\to\folder --key "my-soc-secret" --ignore "*.tmp,cache/*"
 
-# 2. Later, check for changes
-python fim.py check
+# 2. Check for file & permission changes (verifying the HMAC signature)
+python fim.py check --key "my-soc-secret" -o fim_report.json
 
-# Or keep watching (checks every 5 seconds, Ctrl+C to stop)
-python fim.py watch -i 5
+# 3. Continuous watch mode with Slack/Discord webhook alerting
+python fim.py watch -i 5 --key "my-soc-secret" --webhook https://discord.com/api/webhooks/...
 ```
 
-| Command | Description |
+| Command / Option | Description |
 |---|---|
-| `baseline <folder>` | Hash every file and save the baseline |
-| `check [folder]` | Compare the folder against the baseline once |
-| `watch [folder]` | Keep checking and alert on new changes |
-| `demo` | Run a simulated attack on a temporary folder |
+| `baseline <folder>` | Hash every file, record permissions/size, and save the baseline |
+| `check [folder]` | Verify baseline signature and compare the folder once |
+| `watch [folder]` | Keep checking on an interval and alert on new changes |
+| `demo` / `--demo` | Run a simulated attack & baseline tampering test on a temp folder |
 | `-b`, `--baseline` | Baseline file to use (default: `baseline.json`) |
-| `-i`, `--interval` | Seconds between checks in `watch` mode (default: 10) |
+| `-k`, `--key` | Secret key for `HMAC-SHA256` baseline signing/verification (or `FIM_SECRET_KEY` env var) |
+| `--ignore` | Comma-separated glob patterns to ignore (plus `.fimignore` if present) |
+| `--webhook` | Slack, Discord, or Teams webhook URL for real-time change alerts |
+| `-o`, `--output` | Export integrity findings to a JSON report file |
+| `-i`, `--interval` | Seconds between checks in `watch` mode (default: `10`) |
 
-> **Tip:** In real use, keep the baseline file somewhere an attacker can't reach (read-only storage or another machine). If they can edit the baseline, they can hide their changes.
+> **Tip:** Signing `baseline.json` with `--key` (or storing your key in the `FIM_SECRET_KEY` environment variable) guarantees that even if an attacker gains write access to `baseline.json` and replaces a file's SHA-256 hash, the `HMAC-SHA256` verification will fail with exit code `3`.
 
 ## 📊 Example Output
 ![File Integrity Monitor demo](demo.png)
 
-```
-=== File Integrity Monitor: demo ===
+```text
+                    [ File Integrity Monitor (FIM) v2.0 ]
 
-[1] Baseline created for a sample web server folder (3 files)
+[*] Target Folder   : /var/www/webserver (Simulated Temp Environment)
+[*] Security Policy : HMAC-SHA256 Signed Baseline  |  Ignore Rules: *.tmp, cache/*
+============================================================================
 
-[2] Simulating an attacker...
-    - modified config/settings.conf
-    - dropped shell.php
-    - deleted logs/access.log (covering tracks)
+[1] Created HMAC-SHA256 Signed Baseline (3 files hashed, 1 *.tmp file ignored)
 
-[3] Running integrity check...
-[2026-10-18 13:50:52] [!!] INTEGRITY CHANGES DETECTED
-     [ADDED]    shell.php
-     [MODIFIED] config/settings.conf
-     [DELETED]  logs/access.log
-     Summary: 1 added, 1 modified, 1 deleted
+[2] Simulating Intrusion & File Tampering...
+    • Modified config/settings.conf (privilege escalation)
+    • Dropped shell.php in webroot (persistence)
+    • Deleted logs/access.log (defense evasion)
+
+[3] Verifying Baseline Signature & Running Integrity Check...
+    • Baseline Signature : VALID (HMAC-SHA256 Verified)
+[2026-10-27 17:57:08] [!!] INTEGRITY CHANGES DETECTED
+     [ADDED]      shell.php  (MITRE T1505.003)
+     [MODIFIED]   config/settings.conf  (MITRE T1565.001)
+     [DELETED]    logs/access.log  (MITRE T1070.004)
+     Summary: 1 added, 1 modified, 0 perm-changed, 1 deleted
+
+[4] Simulating Attacker Editing baseline.json Directly (Anti-Tamper Test)...
+    • [CRITICAL ALERT] TAMPERED (HMAC-SHA256 Mismatch — baseline.json was modified!)
+============================================================================
 ```
 
 ## 🧠 What I Learned
-- How cryptographic hashes act as file fingerprints: change one byte and the hash changes completely
-- Host-based intrusion detection and why FIM is required by standards like **PCI DSS**
-- Hashing large files in chunks to keep memory use low
+- How cryptographic hashes (`SHA-256`) and keyed message authentication codes (`HMAC-SHA256`) work together: `SHA-256` fingerprints the files, while `HMAC-SHA256` proves the baseline file itself was not forged by an intruder
+- How host-based intrusion detection systems (HIDS) track permission mutations (`T1222`) alongside content changes to catch `chmod` / SUID privilege escalation
+- Designing noise-free monitoring policies with `.fimignore` glob filtering so volatile cache and temp files don't cause alert fatigue
 
-## 🛣️ Future Improvements
-- Sign the baseline with HMAC so tampering with it can be detected
-- Send alerts by email or Discord/Slack webhook
-- Ignore patterns (e.g. `*.tmp`, `cache/`)
+## 🔄 Version History & Changelog (v1.0 → v2.0)
+- **v1.0 (Initial Release):** Recursive `SHA-256` file hashing, `baseline` / `check` / `watch` / `demo` subcommands, detection of added, modified, and deleted files, and exit code `2` for automation.
+- **v2.0:**
+  - Added **Tamper-Proof `HMAC-SHA256` Signed Baselines (`-k / --key` & `FIM_SECRET_KEY`)** using constant-time `hmac.compare_digest` verification to detect direct tampering with `baseline.json`.
+  - Added **Ignore Rules (`--ignore` & `.fimignore`)** supporting glob patterns (`*.tmp`, `cache/*`, `__pycache__/*`) to filter out noisy temporary files.
+  - Added **File Permission (`mode`) & Size Metadata Tracking** to detect `chmod` permission changes (`MITRE T1222`) even when file contents are untouched.
+  - Added **Real-Time Webhook Alerting (`--webhook`)** for Slack, Discord, and Teams plus **JSON Report Export (`-o`)** and `--demo` flag support.
