@@ -8,10 +8,10 @@ I want to share with you some of the Python scripts I made. Feel free to contact
 |---|---|
 | [🔍 SSH & Auth Log Analyzer](./ssh-log-analyzer) | Detects SSH & Windows (`4625`/`4624`) brute-force bursts, password spraying and post-attack account compromise |
 | [🔐 Password Breach Checker](./password-breach-checker) | Checks whether a password has been leaked in data breaches, privately, using k-anonymity |
-| [🌐 Web Security Header Scanner](./security-header-scanner) | Grades a website's HTTP security headers, cookie flags and information leaks (A–F) |
+| [🌐 Web Security Header Scanner](./security-header-scanner) | Audits HTTP security headers, HSTS preload readiness, CORS reflection, TLS posture and cookie flags (Grade A–F) |
 | [🗂️ File Integrity Monitor](./file-integrity-monitor) | Detects file & permission tampering using `HMAC-SHA256` signed baselines, ignore rules and webhook alerts |
 | [📧 Phishing Email Analyzer](./phishing-email-analyzer) | Triages `.eml` emails with PSL domain checks, SPF/DKIM/DMARC, HTML `<form>`/pixel traps, attachment hashing and IOC export |
-| [🗺️ Website Crawler & Site Mapper](./site-mapper) | Crawls a website to build a visual page tree and map forms, sensitive paths, files and broken links |
+| [🗺️ Website Crawler & Site Mapper](./site-mapper) | Crawls websites, extracts JS bundle API routes/secrets, filters SPA Soft-404s and probes hidden endpoints |
 | [🕵️‍♂️ PCAP Network Packet Threat Hunter](./pcap-threat-hunter) | Parses `.pcap` & `.pcapng` (IPv4/IPv6) captures with TCP stream reassembly to detect SYN scans, ARP spoofing, DNS/ICMP tunneling, C2 beacons and cleartext credentials |
 | [📦 CVE Dependency & Supply-Chain Scanner](./cve-dependency-scanner) | Audits `requirements.txt` and `package.json` against the live OSV.dev database for known CVEs, severities and fix versions |
 | [🧬 Static Malware & File Triage Scanner](./malware-triage-scanner) | Inspects files & folders via magic bytes, PE section table (`RWX`/packer) entropy, API indicators, PDB/Registry IOCs and auto-YARA generation |
