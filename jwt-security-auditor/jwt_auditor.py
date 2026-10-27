@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-JWT Security Auditor (Red Team / Application Security Assessment)
+JWT Security Auditor v2.0 (Red Team / Application Security Assessment)
 Decodes JSON Web Tokens (RFC 7519), audits headers and claims against OWASP API2:2023 /
 A07:2021 best practices (alg:none, header injection, lifetime/exp issues, sensitive data exposure),
-and tests HMAC (HS256/HS384/HS512) signatures against common weak development secrets.
+tests HMAC (HS256/HS384/HS512) signatures against weak development secrets, inspects live
+OpenID Connect / JWKS endpoints (--jwks), checks public-key HMAC algorithm confusion (--public-key),
+and extracts/audits tokens in batch from .har or HTTP logs (--extract-file).
 """
 
 import argparse
@@ -11,8 +13,11 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,10 +37,9 @@ BANNER = r"""
      EG.              t       ..         G#E         tt   :W##########Wt   EL     
      ,                                    fE              :,,,,,,,,,,,,,.  :      
                                            ,                                      
-                           [ JWT Security Auditor ]
+                         [ JWT Security Auditor v2.0 ]
 """
 
-# Built-in dictionary of common default/weak HMAC secrets used in development configs
 DEFAULT_WEAK_SECRETS = [
     "secret", "password", "123456", "jwt_secret", "supersecret", "changeme",
     "admin", "development", "dev-secret", "mysecret", "secretkey", "jwtkey",
@@ -43,7 +47,6 @@ DEFAULT_WEAK_SECRETS = [
     "qwerty", "letmein", "token_secret", "sonelu_demo_secret",
 ]
 
-# Keywords indicating sensitive data accidentally stored in unencrypted JWT payloads
 SENSITIVE_CLAIM_KEYS = {
     "password", "passwd", "pwd", "secret", "api_key", "apikey", "internal_api_key",
     "private_key", "access_key", "ssn", "credit_card", "card_number", "cvv", "pin",
@@ -54,6 +57,10 @@ HMAC_ALGORITHMS = {
     "HS384": hashlib.sha384,
     "HS512": hashlib.sha512,
 }
+
+ASYMMETRIC_ALGORITHMS = {"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512", "EDDSA"}
+
+JWT_REGEX = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*")
 
 
 def b64url_decode(segment: str) -> bytes:
@@ -81,7 +88,7 @@ def build_demo_jwt() -> str:
         "sub": "usr_9042_admin",
         "username": "svc_deploy",
         "role": "superadmin",
-        "internal_api_key": "sk-live-98a4f2c1e0b7",
+        "internal_api_key": "demo_internal_token_98a4f2c1e0b7",
         "iat": now - 3600,
         "exp": now + (365 * 86400),  # 365-day token lifetime
     }
@@ -90,6 +97,30 @@ def build_demo_jwt() -> str:
     signing_input = f"{h_b64}.{p_b64}".encode("ascii")
     sig = hmac.new(b"jwt_secret", signing_input, hashlib.sha256).digest()
     return f"{h_b64}.{p_b64}.{b64url_encode(sig)}"
+
+
+def build_demo_jwks() -> dict:
+    """Returns a sample JWKS response with key-hygiene findings for --demo mode."""
+    return {
+        "source": "https://auth.example.com/.well-known/jwks.json (Built-in Demo JWKS)",
+        "keys": [
+            {
+                "kty": "RSA",
+                "kid": "prod-rsa-2026-01",
+                "use": "sig",
+                "alg": "RS256",
+                "n": "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw",
+                "e": "AQAB",
+            },
+            {
+                "kty": "RSA",
+                "kid": "legacy-unpinned-key",
+                # Missing 'alg' and 'use' fields!
+                "n": "xvx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc",
+                "e": "AQAB",
+            },
+        ],
+    }
 
 
 def parse_jwt(token: str) -> dict:
@@ -137,6 +168,129 @@ def test_hmac_secrets(signing_input: str, signature_b64: str, alg: str, secrets:
     return None
 
 
+def check_public_key_confusion(parsed: dict, pubkey_bytes: bytes) -> dict:
+    """
+    Audits a token against RSA/ECDSA -> HMAC algorithm confusion (CVE-2016-5431 / CVE-2016-10555).
+    Checks whether an HS256/384/512 signature was computed using the server's public key bytes
+    (either raw or stripped of trailing newlines) as an HMAC secret, or evaluates confusion risk
+    if the token uses an asymmetric algorithm.
+    """
+    alg = str(parsed["header"].get("alg", "")).upper()
+    sig_b64 = parsed["signature_b64"]
+    msg = parsed["signing_input"].encode("ascii")
+
+    variants = [
+        ("exact PEM bytes", pubkey_bytes),
+        ("trimmed PEM bytes", pubkey_bytes.strip()),
+        ("LF-normalized PEM bytes", pubkey_bytes.replace(b"\r\n", b"\n").strip()),
+    ]
+
+    matched_variant = None
+    if alg in HMAC_ALGORITHMS and sig_b64:
+        hash_fn = HMAC_ALGORITHMS[alg]
+        for label, key_material in variants:
+            digest = hmac.new(key_material, msg, hash_fn).digest()
+            if hmac.compare_digest(b64url_encode(digest), sig_b64):
+                matched_variant = label
+                break
+
+    return {
+        "public_key_loaded": True,
+        "public_key_sha256": hashlib.sha256(pubkey_bytes).hexdigest()[:16],
+        "token_alg": alg,
+        "signed_with_public_key_hmac": matched_variant is not None,
+        "matched_variant": matched_variant,
+        "asymmetric_downgrade_candidate": alg in ASYMMETRIC_ALGORITHMS,
+    }
+
+
+def fetch_and_audit_jwks(url: str, token_kid: str | None = None, demo_jwks: dict | None = None) -> dict:
+    """
+    Fetches either an OpenID Connect discovery document (/.well-known/openid-configuration)
+    or a JWKS endpoint (jwks.json) and audits key rotation, algorithm pinning, and kid matching.
+    """
+    if demo_jwks is not None:
+        jwks_data = demo_jwks
+        source_url = demo_jwks.get("source", url)
+    else:
+        req = urllib.request.Request(url, headers={"User-Agent": "Sonelu-JWT-Auditor/2.0"})
+        with urllib.request.urlopen(req, timeout=6.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        source_url = url
+        # If OpenID discovery doc, follow jwks_uri
+        if "jwks_uri" in data and "keys" not in data:
+            jwks_uri = data["jwks_uri"]
+            req2 = urllib.request.Request(jwks_uri, headers={"User-Agent": "Sonelu-JWT-Auditor/2.0"})
+            with urllib.request.urlopen(req2, timeout=6.0) as resp2:
+                jwks_data = json.loads(resp2.read().decode("utf-8"))
+            source_url = f"{url} -> {jwks_uri}"
+        else:
+            jwks_data = data
+
+    keys = jwks_data.get("keys", [])
+    key_summaries = []
+    jwks_findings = []
+    matched_kid = False
+
+    for idx, k in enumerate(keys):
+        kty = k.get("kty", "UNKNOWN")
+        kid = k.get("kid", f"<missing-kid-{idx}>")
+        use = k.get("use", "UNSPECIFIED")
+        alg = k.get("alg", "UNPINNED")
+        key_summaries.append({"kid": kid, "kty": kty, "use": use, "alg": alg})
+
+        if token_kid and kid == token_kid:
+            matched_kid = True
+
+        # Check for symmetric or private key material accidentally leaked in public JWKS
+        if kty.upper() == "OCT" or "k" in k:
+            jwks_findings.append({
+                "severity": "CRITICAL",
+                "title": f"Symmetric Key Material Exposed in Public JWKS (kid: {kid})",
+                "detail": "JWKS contains a symmetric 'oct' key; anyone can fetch the key and forge tokens.",
+            })
+        if any(priv_param in k for priv_param in ("d", "p", "q", "dp", "dq", "qi")):
+            jwks_findings.append({
+                "severity": "CRITICAL",
+                "title": f"Private Key Parameters Exposed in Public JWKS (kid: {kid})",
+                "detail": "Public JWKS leaks private RSA/EC exponent parameters ('d'/'p'/'q')!",
+            })
+        if alg == "UNPINNED" or use == "UNSPECIFIED":
+            jwks_findings.append({
+                "severity": "LOW",
+                "title": f"Unpinned JWK Metadata (kid: {kid}, alg: {alg}, use: {use})",
+                "detail": "Pinning both 'alg' and 'use': 'sig' in every JWK helps prevent cross-algorithm key misuse.",
+            })
+
+    if token_kid and keys and not matched_kid:
+        jwks_findings.append({
+            "severity": "MEDIUM",
+            "title": f"Token 'kid' ('{token_kid}') Not Found in Active JWKS ({len(keys)} keys)",
+            "detail": "Token references a rotated, retired, or injected key ID not present in the server's JWKS.",
+        })
+
+    return {
+        "source": source_url,
+        "key_count": len(keys),
+        "token_kid_matched": matched_kid,
+        "keys": key_summaries,
+        "findings": jwks_findings,
+    }
+
+
+def extract_jwts_from_file(path: Path) -> list[str]:
+    """Extracts unique JWT strings from a .har capture, proxy log, or raw text file."""
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    matches = JWT_REGEX.findall(content)
+    unique = []
+    seen = set()
+    for m in matches:
+        if m not in seen:
+            seen.add(m)
+            unique.append(m)
+    return unique
+
+
 def fmt_ts(epoch_val: int | float) -> str:
     """Formats a Unix epoch timestamp into a readable UTC string."""
     try:
@@ -145,8 +299,13 @@ def fmt_ts(epoch_val: int | float) -> str:
         return str(epoch_val)
 
 
-def audit_jwt(parsed: dict, secrets: list[str]) -> dict:
-    """Evaluates header, claims, and HMAC signature strength; returns findings and risk score."""
+def audit_jwt(
+    parsed: dict,
+    secrets: list[str],
+    pubkey_bytes: bytes | None = None,
+    jwks_report: dict | None = None,
+) -> dict:
+    """Evaluates header, claims, HMAC strength, public-key confusion, and JWKS posture."""
     header = parsed["header"]
     payload = parsed["payload"]
     sig_b64 = parsed["signature_b64"]
@@ -154,6 +313,7 @@ def audit_jwt(parsed: dict, secrets: list[str]) -> dict:
 
     findings = []
     risk_score = 0
+    matched_secret = None
 
     # 1. Algorithm checks
     if alg.lower() == "none" or not sig_b64:
@@ -172,10 +332,26 @@ def audit_jwt(parsed: dict, secrets: list[str]) -> dict:
                 "detail": f"{alg} signature matched weak secret '{matched_secret}' ({len(secrets)} candidates tested). Attackers can forge admin tokens.",
             })
             risk_score += 45
-    else:
-        matched_secret = None
 
-    # 2. Header injection / dangerous key parameters
+    # 2. Public-key algorithm confusion check (--public-key)
+    pubkey_audit = None
+    if pubkey_bytes:
+        pubkey_audit = check_public_key_confusion(parsed, pubkey_bytes)
+        if pubkey_audit["signed_with_public_key_hmac"]:
+            findings.append({
+                "severity": "CRITICAL",
+                "title": f"Algorithm Confusion Confirmed ({alg} Signed with Public Key Bytes)",
+                "detail": f"Signature matched HMAC computed using the server's public key ({pubkey_audit['matched_variant']}) (CVE-2016-5431).",
+            })
+            risk_score += 50
+        elif pubkey_audit["asymmetric_downgrade_candidate"]:
+            findings.append({
+                "severity": "LOW",
+                "title": f"Asymmetric Token Audited for Key Confusion ({alg})",
+                "detail": "Ensure the backend verifier strictly pins algorithms=['RS256']/['ES256'] and rejects HS256 downgrades.",
+            })
+
+    # 3. Header injection / dangerous key parameters
     for hdr_param in ("jku", "jwk", "x5u"):
         if hdr_param in header:
             findings.append({
@@ -194,7 +370,7 @@ def audit_jwt(parsed: dict, secrets: list[str]) -> dict:
         })
         risk_score += 20
 
-    # 3. Expiration & lifetime checks
+    # 4. Expiration & lifetime checks
     now = int(time.time())
     if "exp" not in payload:
         findings.append({
@@ -225,7 +401,7 @@ def audit_jwt(parsed: dict, secrets: list[str]) -> dict:
         except (ValueError, TypeError):
             pass
 
-    # 4. Sensitive data exposure in unencrypted payload
+    # 5. Sensitive data exposure in unencrypted payload
     exposed_keys = [k for k in payload if k.lower() in SENSITIVE_CLAIM_KEYS]
     if exposed_keys:
         findings.append({
@@ -235,7 +411,7 @@ def audit_jwt(parsed: dict, secrets: list[str]) -> dict:
         })
         risk_score += 20
 
-    # 5. Missing standard replay/audience scope claims
+    # 6. Missing standard replay/audience scope claims
     missing_std = [c for c in ("iss", "aud", "jti") if c not in payload]
     if missing_std:
         findings.append({
@@ -244,6 +420,17 @@ def audit_jwt(parsed: dict, secrets: list[str]) -> dict:
             "detail": "Omitting 'aud'/'iss'/'jti' increases risk of cross-service token replay attacks.",
         })
         risk_score += 10
+
+    # 7. Merge JWKS findings if present
+    if jwks_report:
+        for jf in jwks_report["findings"]:
+            findings.append(jf)
+            if jf["severity"] == "CRITICAL":
+                risk_score += 40
+            elif jf["severity"] == "MEDIUM":
+                risk_score += 15
+            else:
+                risk_score += 5
 
     risk_score = min(100, risk_score)
     if risk_score >= 70:
@@ -262,6 +449,8 @@ def audit_jwt(parsed: dict, secrets: list[str]) -> dict:
         "signature_present": bool(sig_b64),
         "weak_secret_found": matched_secret if alg.upper() in HMAC_ALGORITHMS else None,
         "secrets_tested": len(secrets) if alg.upper() in HMAC_ALGORITHMS else 0,
+        "public_key_audit": pubkey_audit,
+        "jwks_audit": jwks_report,
         "risk_score": risk_score,
         "verdict": verdict,
         "findings": findings,
@@ -272,7 +461,7 @@ def print_report(report: dict, source_label: str) -> None:
     """Prints a clean, single-screen JWT Security Audit report."""
     print(f"[*] Target Token : {source_label}")
     print(f"[*] Algorithm    : {report['algorithm']}  |  HMAC Secrets Tested: {report['secrets_tested']}")
-    print("=" * 72)
+    print("=" * 76)
 
     print("\n[🧩 Decoded Header & Payload]")
     print(f"  Header  : {json.dumps(report['header'])}")
@@ -280,6 +469,12 @@ def print_report(report: dict, source_label: str) -> None:
     for k, v in report["payload"].items():
         extra = f"  ({fmt_ts(v)})" if k in ("exp", "iat", "nbf") and isinstance(v, (int, float)) else ""
         print(f"    • {k:<18}: {v}{extra}")
+
+    if report.get("jwks_audit"):
+        ja = report["jwks_audit"]
+        print(f"\n[🌐 OpenID / JWKS Key Discovery ({ja['key_count']} keys from {ja['source']})]")
+        for k in ja["keys"][:5]:
+            print(f"    • kid={k['kid']:<22} kty={k['kty']:<5} alg={k['alg']:<10} use={k['use']}")
 
     print(f"\n[🚨 Security Audit Findings ({len(report['findings'])})]")
     if not report["findings"]:
@@ -290,9 +485,9 @@ def print_report(report: dict, source_label: str) -> None:
             print(f"  • {sev:<10} {f['title']}")
             print(f"               └─ {f['detail']}")
 
-    print("\n" + "=" * 72)
+    print("\n" + "=" * 76)
     print(f"[!] RISK SCORE   : {report['risk_score']}/100 — {report['verdict']}")
-    print("=" * 72)
+    print("=" * 76)
 
 
 def main() -> None:
@@ -300,16 +495,70 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
 
     parser = argparse.ArgumentParser(
-        description="Decode and audit JWT tokens for alg:none, claim flaws, and weak HMAC secrets."
+        description="Decode and audit JWT tokens for alg:none, claim flaws, weak HMAC secrets, JWKS hygiene, and key confusion."
     )
     parser.add_argument("token", nargs="?", help="JWT string (eyJ...) or path to file containing a token")
-    parser.add_argument("--demo", action="store_true", help="Audit a built-in vulnerable sample JWT")
+    parser.add_argument("--demo", action="store_true", help="Audit a built-in vulnerable sample JWT + JWKS")
     parser.add_argument("-w", "--wordlist", help="Path to custom wordlist file for HMAC secret auditing")
     parser.add_argument("-s", "--secret", help="Test a specific HMAC secret key against the token")
+    parser.add_argument("--jwks", help="URL to a live jwks.json or /.well-known/openid-configuration endpoint")
+    parser.add_argument("--public-key", help="Path to PEM public key file to audit RS256->HS256 algorithm confusion")
+    parser.add_argument("--extract-file", help="Extract and batch-audit all JWTs from a .har capture or HTTP log file")
     parser.add_argument("-o", "--output", help="Export full audit report to a JSON file")
     args = parser.parse_args()
 
     print(BANNER)
+
+    secrets = list(DEFAULT_WEAK_SECRETS)
+    if args.secret:
+        secrets.insert(0, args.secret)
+    if args.wordlist:
+        wl_path = Path(args.wordlist)
+        if not wl_path.is_file():
+            print(f"[!] Error: Wordlist file not found: {args.wordlist}")
+            sys.exit(1)
+        custom = [line.strip() for line in wl_path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
+        secrets = list(dict.fromkeys(custom + secrets))
+
+    pubkey_bytes = None
+    if args.public_key:
+        pk_path = Path(args.public_key)
+        if not pk_path.is_file():
+            print(f"[!] Error: Public key file not found: {args.public_key}")
+            sys.exit(1)
+        pubkey_bytes = pk_path.read_bytes()
+
+    # Batch .har / HTTP log extraction mode
+    if args.extract_file:
+        ext_path = Path(args.extract_file)
+        if not ext_path.is_file():
+            print(f"[!] Error: Capture file not found: {args.extract_file}")
+            sys.exit(1)
+        tokens = extract_jwts_from_file(ext_path)
+        if not tokens:
+            print(f"[!] No JWT tokens (eyJ...) found in {ext_path}")
+            sys.exit(1)
+        print(f"[*] Batch Capture Source : {ext_path} ({len(tokens)} unique JWTs extracted)")
+        print("=" * 76)
+        batch_reports = []
+        for idx, tok in enumerate(tokens, 1):
+            try:
+                parsed = parse_jwt(tok)
+                rep = audit_jwt(parsed, secrets, pubkey_bytes=pubkey_bytes)
+                batch_reports.append(rep)
+                sub = rep["payload"].get("sub", "N/A")
+                print(
+                    f"  [#{idx}] alg={rep['algorithm']:<6} sub={str(sub):<18} "
+                    f"score={rep['risk_score']:>3}/100  findings={len(rep['findings'])}  "
+                    f"weak_secret={rep['weak_secret_found'] or 'None'}"
+                )
+            except ValueError as err:
+                print(f"  [#{idx}] Skipped malformed token: {err}")
+        print("=" * 76)
+        if args.output:
+            Path(args.output).write_text(json.dumps(batch_reports, indent=2), encoding="utf-8")
+            print(f"[+] Saved batch JSON audit report to {args.output}")
+        return
 
     if args.demo:
         raw_token = build_demo_jwt()
@@ -327,24 +576,23 @@ def main() -> None:
         print("\n💡 Tip: Run with --demo to audit a sample vulnerable JWT!")
         sys.exit(0)
 
-    secrets = list(DEFAULT_WEAK_SECRETS)
-    if args.secret:
-        secrets.insert(0, args.secret)
-    if args.wordlist:
-        wl_path = Path(args.wordlist)
-        if not wl_path.is_file():
-            print(f"[!] Error: Wordlist file not found: {args.wordlist}")
-            sys.exit(1)
-        custom = [line.strip() for line in wl_path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
-        secrets = list(dict.fromkeys(custom + secrets))
-
     try:
         parsed = parse_jwt(raw_token)
     except ValueError as err:
         print(f"[!] Error: {err}")
         sys.exit(1)
 
-    report = audit_jwt(parsed, secrets)
+    jwks_report = None
+    token_kid = parsed["header"].get("kid")
+    if args.demo and not args.jwks:
+        jwks_report = fetch_and_audit_jwks("demo", token_kid=token_kid, demo_jwks=build_demo_jwks())
+    elif args.jwks:
+        try:
+            jwks_report = fetch_and_audit_jwks(args.jwks, token_kid=token_kid)
+        except Exception as exc:
+            print(f"[!] Warning: Could not fetch JWKS from {args.jwks}: {exc}")
+
+    report = audit_jwt(parsed, secrets, pubkey_bytes=pubkey_bytes, jwks_report=jwks_report)
     print_report(report, source_label)
 
     if args.output:

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-TLS & SSL Certificate Security Inspector (Red Team / Network & Web Security Assessment)
+TLS & SSL Certificate Security Inspector v2.0 (Red Team / Network & Web Security Assessment)
 Connects to HTTPS endpoints to audit X.509 certificate validity/expiry, issuer chains,
-Subject Alternative Names (SANs) for attack-surface discovery, TLS protocol versions,
-and negotiated cipher suites using only the Python standard library.
+OCSP/CRL revocation endpoints, Subject Alternative Names (SANs), Certificate Transparency
+(crt.sh) historical subdomains (--ct-logs), active cipher suite enumeration (--enum-ciphers),
+and concurrent batch domain scanning (-i) using only the Python standard library.
 """
 
 import argparse
@@ -12,6 +13,10 @@ import json
 import socket
 import ssl
 import sys
+import urllib.error
+import urllib.request
+import warnings
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -32,10 +37,19 @@ BANNER = r"""
      EG.              t       ..         G#E         tt   :W##########Wt   EL     
      ,                                    fE              :,,,,,,,,,,,,,.  :      
                                            ,                                      
-                      [ TLS & Certificate Security Inspector ]
+                    [ TLS & Certificate Security Inspector v2.0 ]
 """
 
 WEAK_CIPHER_KEYWORDS = ("RC4", "3DES", "DES", "MD5", "NULL", "EXPORT", "ANON")
+
+CIPHER_PROBE_FAMILIES = [
+    ("TLS 1.2 ECDHE-ECDSA-AESGCM", "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384"),
+    ("TLS 1.2 ECDHE-RSA-AESGCM", "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384"),
+    ("TLS 1.2 ECDHE-CHACHA20", "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305"),
+    ("TLS 1.2 ECDHE-CBC (Legacy)", "ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA"),
+    ("TLS 1.2 Static RSA (No PFS)", "AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA"),
+    ("TLS 1.2 3DES (Weak)", "DES-CBC3-SHA:ECDHE-RSA-DES-CBC3-SHA"),
+]
 
 
 def parse_target(raw_target: str, default_port: int = 443) -> tuple[str, int]:
@@ -75,20 +89,100 @@ def probe_legacy_tls(hostname: str, port: int, timeout: float) -> list[str]:
         if ver_enum is None:
             continue
         try:
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            ctx.minimum_version = ver_enum
-            ctx.maximum_version = ver_enum
-            with socket.create_connection((hostname, port), timeout=timeout) as sock:
-                with ctx.wrap_socket(sock, server_hostname=hostname):
-                    accepted_legacy.append(ver_name)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                ctx.minimum_version = ver_enum
+                ctx.maximum_version = ver_enum
+                with socket.create_connection((hostname, port), timeout=timeout) as sock:
+                    with ctx.wrap_socket(sock, server_hostname=hostname):
+                        accepted_legacy.append(ver_name)
         except Exception:
             pass
     return accepted_legacy
 
 
-def inspect_live_tls(hostname: str, port: int, timeout: float = 6.0) -> dict:
+def enumerate_accepted_ciphers(hostname: str, port: int, timeout: float = 3.0) -> list[dict]:
+    """Actively probes TLS 1.3 and TLS 1.2 cipher families to see which suites the server accepts."""
+    accepted = []
+    # 1. Check TLS 1.3 default negotiation
+    if hasattr(ssl, "TLSVersion") and hasattr(ssl.TLSVersion, "TLSv1_3"):
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+            ctx.maximum_version = ssl.TLSVersion.TLSv1_3
+            with socket.create_connection((hostname, port), timeout=timeout) as sock:
+                with ctx.wrap_socket(sock, server_hostname=hostname) as ssock:
+                    c_name, c_ver, c_bits = ssock.cipher() or ("UNKNOWN", "TLSv1.3", 0)
+                    accepted.append({"family": "TLS 1.3 AEAD", "cipher": c_name, "protocol": c_ver, "bits": c_bits})
+        except Exception:
+            pass
+
+    # 2. Probe TLS 1.2 cipher families
+    for family_label, cipher_str in CIPHER_PROBE_FAMILIES:
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            if hasattr(ssl, "TLSVersion") and hasattr(ssl.TLSVersion, "TLSv1_2"):
+                ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+                ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+            ctx.set_ciphers(cipher_str)
+            with socket.create_connection((hostname, port), timeout=timeout) as sock:
+                with ctx.wrap_socket(sock, server_hostname=hostname) as ssock:
+                    c_name, c_ver, c_bits = ssock.cipher() or ("UNKNOWN", "TLSv1.2", 0)
+                    accepted.append({"family": family_label, "cipher": c_name, "protocol": c_ver, "bits": c_bits})
+        except Exception:
+            pass
+    return accepted
+
+
+def query_crt_sh(hostname: str, timeout: float = 6.0) -> list[str]:
+    """Queries Certificate Transparency logs (crt.sh) for historical subdomains of the target domain."""
+    parts = hostname.lower().lstrip("*.").split(".")
+    base_domain = ".".join(parts[-2:]) if len(parts) >= 2 else hostname
+    url = f"https://crt.sh/?q=%25.{base_domain}&output=json"
+    req = urllib.request.Request(url, headers={"User-Agent": "Sonelu-TLS-Inspector/2.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        return []
+
+    subdomains = set()
+    for entry in data:
+        for line in str(entry.get("name_value", "")).splitlines():
+            clean = line.strip().lower()
+            if clean and clean.endswith(base_domain) and not clean.startswith("*."):
+                subdomains.add(clean)
+    return sorted(subdomains)[:25]
+
+
+def check_revocation_reachability(urls: list[str], timeout: float = 4.0) -> list[dict]:
+    """Checks whether OCSP/CRL revocation URLs are reachable over HTTP."""
+    results = []
+    for u in urls[:4]:
+        try:
+            req = urllib.request.Request(u, headers={"User-Agent": "Sonelu-TLS-Inspector/2.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                results.append({"url": u, "status": resp.status, "reachable": 200 <= resp.status < 400})
+        except Exception as exc:
+            results.append({"url": u, "status": str(exc)[:40], "reachable": False})
+    return results
+
+
+def inspect_live_tls(
+    hostname: str,
+    port: int,
+    timeout: float = 6.0,
+    enum_ciphers: bool = False,
+    ct_logs: bool = False,
+    check_revocation: bool = False,
+) -> dict:
     """Connects to an HTTPS target, retrieves X.509 certificate metadata, and inspects TLS parameters."""
     verified_chain = True
     ctx = ssl.create_default_context()
@@ -101,7 +195,6 @@ def inspect_live_tls(hostname: str, port: int, timeout: float = 6.0) -> dict:
                 tls_version = ssock.version() or "UNKNOWN"
                 cipher_info = ssock.cipher() or ("UNKNOWN", "UNKNOWN", 0)
     except ssl.SSLCertVerificationError:
-        # Fallback to unverified inspection so we can still audit self-signed/expired certs
         verified_chain = False
         fallback_ctx = ssl.create_default_context()
         fallback_ctx.check_hostname = False
@@ -119,6 +212,8 @@ def inspect_live_tls(hostname: str, port: int, timeout: float = 6.0) -> dict:
     subject = parse_rdn(cert_dict.get("subject", ()))
     issuer = parse_rdn(cert_dict.get("issuer", ()))
     sans = [val for kind, val in cert_dict.get("subjectAltName", ()) if kind == "DNS"]
+    ocsp_urls = list(cert_dict.get("OCSP", ()))
+    crl_urls = list(cert_dict.get("crlDistributionPoints", ()))
 
     not_before_str = cert_dict.get("notBefore", "")
     not_after_str = cert_dict.get("notAfter", "")
@@ -139,6 +234,11 @@ def inspect_live_tls(hostname: str, port: int, timeout: float = 6.0) -> dict:
             total_validity_days = (exp_dt - start_dt).days
 
     legacy_supported = probe_legacy_tls(hostname, port, timeout=min(timeout, 3.0))
+    accepted_ciphers = enumerate_accepted_ciphers(hostname, port, timeout=min(timeout, 3.0)) if enum_ciphers else []
+    ct_subdomains = query_crt_sh(hostname, timeout=min(timeout, 6.0)) if ct_logs else []
+    revocation_checks = (
+        check_revocation_reachability(ocsp_urls + crl_urls, timeout=min(timeout, 4.0)) if check_revocation else []
+    )
 
     return {
         "target": f"{hostname}:{port}",
@@ -159,7 +259,12 @@ def inspect_live_tls(hostname: str, port: int, timeout: float = 6.0) -> dict:
         "days_remaining": days_left,
         "total_validity_days": total_validity_days,
         "sans": sans,
+        "ocsp_urls": ocsp_urls,
+        "crl_urls": crl_urls,
+        "revocation_checks": revocation_checks,
         "legacy_protocols": legacy_supported,
+        "accepted_ciphers": accepted_ciphers,
+        "ct_subdomains": ct_subdomains,
     }
 
 
@@ -193,7 +298,24 @@ def build_demo_data() -> dict:
             "vpn-admin.example.com",
             "jenkins-internal.example.net",
         ],
+        "ocsp_urls": ["http://ocsp.example.com/status"],
+        "crl_urls": ["http://crl.example.com/issuing-g2.crl"],
+        "revocation_checks": [
+            {"url": "http://ocsp.example.com/status", "status": 200, "reachable": True},
+            {"url": "http://crl.example.com/issuing-g2.crl", "status": 200, "reachable": True},
+        ],
         "legacy_protocols": ["TLSv1.1"],
+        "accepted_ciphers": [
+            {"family": "TLS 1.2 ECDHE-RSA-AESGCM", "cipher": "ECDHE-RSA-AES128-GCM-SHA256", "protocol": "TLSv1.2", "bits": 128},
+            {"family": "TLS 1.2 ECDHE-CBC (Legacy)", "cipher": "ECDHE-RSA-AES128-SHA", "protocol": "TLSv1.2", "bits": 128},
+            {"family": "TLS 1.2 Static RSA (No PFS)", "cipher": "AES128-SHA", "protocol": "TLSv1.2", "bits": 128},
+        ],
+        "ct_subdomains": [
+            "old-git.example.com",
+            "qa-Billing-2024.example.com",
+            "shadow-api.example.com",
+            "staging-gateway.example.com",
+        ],
     }
 
 
@@ -291,7 +413,33 @@ def evaluate_tls_security(info: dict) -> dict:
             })
             score -= 10
 
-    # 5. Wildcard & Multi-Tenant SAN Recon Notice
+    # Check enumerated cipher families if probed
+    for ac in info.get("accepted_ciphers", []):
+        fam = ac["family"]
+        if "No PFS" in fam and all("Forward Secrecy" not in f["title"] for f in findings):
+            findings.append({
+                "severity": "MEDIUM",
+                "title": f"Server Accepts Static RSA Cipher Suite ({ac['cipher']})",
+                "detail": "Clients without ECDHE support can negotiate static RSA without Forward Secrecy.",
+            })
+            score -= 10
+        elif "3DES" in fam:
+            findings.append({
+                "severity": "HIGH",
+                "title": f"Server Accepts Sweet32 3DES Cipher ({ac['cipher']})",
+                "detail": "64-bit block cipher vulnerable to Sweet32 birthday attacks (CVE-2016-2183).",
+            })
+            score -= 20
+
+    # 5. Revocation Hygiene (OCSP / CRL)
+    if info["verified_chain"] and not info.get("ocsp_urls") and not info.get("crl_urls"):
+        findings.append({
+            "severity": "LOW",
+            "title": "No OCSP or CRL Revocation Endpoints Listed in Certificate",
+            "detail": "Certificate omits both AuthorityInfoAccess (OCSP) and CRL Distribution Points.",
+        })
+
+    # 6. Wildcard & Multi-Tenant SAN Recon Notice
     wildcards = [s for s in info["sans"] if s.startswith("*.")]
     if wildcards:
         findings.append({
@@ -325,19 +473,35 @@ def print_report(report: dict) -> None:
     """Prints a compact, single-screen TLS & Certificate Security Audit report."""
     print(f"[*] Target Host  : {report['target']}")
     print(f"[*] Handshake    : {report['tls_version']}  |  Cipher: {report['cipher_name']} ({report['cipher_bits']}-bit)")
-    print("=" * 74)
+    print("=" * 76)
 
     print("\n[📜 X.509 Certificate Metadata]")
     print(f"  • Subject CN   : {report['subject_cn']} ({report['subject_org']})")
     print(f"  • Issuer CA    : {report['issuer_cn']} ({report['issuer_org']})")
     print(f"  • Validity     : {report['not_before']}  →  {report['not_after']} ({report['days_remaining']} days left)")
     print(f"  • Serial / FP  : {report['serial_number']}  |  SHA256: {report['sha256_fingerprint_short']}")
+    rev_count = len(report.get("ocsp_urls", [])) + len(report.get("crl_urls", []))
+    if rev_count:
+        sample_rev = (report.get("ocsp_urls", []) + report.get("crl_urls", []))[0]
+        print(f"  • Revocation   : {rev_count} OCSP/CRL endpoint(s) ({sample_rev})")
 
     sans = report["sans"]
     if sans:
         preview = ", ".join(sans[:6]) + (f" (+{len(sans) - 6} more)" if len(sans) > 6 else "")
         print(f"\n[🌐 Subject Alternative Names (SANs) Discovered ({len(sans)})]")
         print(f"  • {preview}")
+
+    ct_subs = report.get("ct_subdomains") or []
+    if ct_subs:
+        preview_ct = ", ".join(ct_subs[:6]) + (f" (+{len(ct_subs) - 6} more)" if len(ct_subs) > 6 else "")
+        print(f"\n[🔎 Certificate Transparency (crt.sh) Subdomains ({len(ct_subs)})]")
+        print(f"  • {preview_ct}")
+
+    ciphers = report.get("accepted_ciphers") or []
+    if ciphers:
+        print(f"\n[🔐 Enumerated Accepted Cipher Families ({len(ciphers)})]")
+        for c in ciphers:
+            print(f"  • {c['family']:<28} -> {c['cipher']} ({c['protocol']}, {c['bits']}-bit)")
 
     print(f"\n[🚨 TLS & Certificate Security Findings ({len(report['findings'])})]")
     if not report["findings"]:
@@ -348,9 +512,9 @@ def print_report(report: dict) -> None:
             print(f"  • {sev:<10} {f['title']}")
             print(f"               └─ {f['detail']}")
 
-    print("\n" + "=" * 74)
+    print("\n" + "=" * 76)
     print(f"[!] SECURITY GRADE : {report['grade']} ({report['score']}/100)")
-    print("=" * 74)
+    print("=" * 76)
 
 
 def main() -> None:
@@ -358,23 +522,77 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
 
     parser = argparse.ArgumentParser(
-        description="Audit HTTPS targets for certificate expiry, SANs, issuer chain, TLS version, and weak ciphers."
+        description="Audit HTTPS targets for certificate expiry, SANs, crt.sh logs, TLS versions, and cipher suites."
     )
     parser.add_argument("target", nargs="?", help="Target hostname, host:port, or HTTPS URL (e.g. example.com)")
     parser.add_argument("--demo", action="store_true", help="Run built-in TLS & certificate security audit demo")
+    parser.add_argument("-i", "--input-file", help="Path to file containing a list of domains/hosts for batch scanning")
     parser.add_argument("-p", "--port", type=int, default=443, help="Target port (default: 443)")
+    parser.add_argument("--enum-ciphers", action="store_true", help="Actively enumerate accepted TLS 1.3/1.2 cipher families")
+    parser.add_argument("--ct-logs", action="store_true", help="Query Certificate Transparency (crt.sh) for historical subdomains")
+    parser.add_argument("--check-revocation", action="store_true", help="Verify OCSP/CRL revocation URL reachability")
     parser.add_argument("--timeout", type=float, default=6.0, help="Connection timeout in seconds (default: 6.0)")
     parser.add_argument("-o", "--output", help="Export full TLS audit report to a JSON file")
     args = parser.parse_args()
 
     print(BANNER)
 
+    # Batch domain scanning mode (-i)
+    if args.input_file:
+        in_path = Path(args.input_file)
+        if not in_path.is_file():
+            print(f"[!] Input file not found: {in_path}", file=sys.stderr)
+            sys.exit(1)
+        raw_targets = [
+            line.strip()
+            for line in in_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        print(f"[*] Batch Domain Scan : {in_path} ({len(raw_targets)} targets)")
+        print("=" * 76)
+
+        def _audit_one(raw_t: str) -> dict:
+            h, p = parse_target(raw_t, default_port=args.port)
+            try:
+                inf = inspect_live_tls(
+                    h, p, timeout=args.timeout, enum_ciphers=args.enum_ciphers,
+                    ct_logs=args.ct_logs, check_revocation=args.check_revocation
+                )
+                return evaluate_tls_security(inf)
+            except Exception as exc:
+                return {"target": f"{h}:{p}", "error": str(exc), "grade": "ERR", "score": 0}
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            batch_results = list(pool.map(_audit_one, raw_targets))
+
+        for res in batch_results:
+            if "error" in res:
+                print(f"  [ERR]  {res['target']:<28} — {res['error']}")
+            else:
+                print(
+                    f"  [{res['grade']:<2}]   {res['target']:<28} score={res['score']:>3}/100  "
+                    f"proto={res['tls_version']:<7} days_left={str(res['days_remaining']):<4} "
+                    f"SANs={len(res['sans'])}"
+                )
+        print("=" * 76)
+        if args.output:
+            Path(args.output).write_text(json.dumps(batch_results, indent=2), encoding="utf-8")
+            print(f"[+] Exported batch TLS audit report to {args.output}")
+        return
+
     if args.demo:
         info = build_demo_data()
     elif args.target:
         hostname, port = parse_target(args.target, default_port=args.port)
         try:
-            info = inspect_live_tls(hostname, port, timeout=args.timeout)
+            info = inspect_live_tls(
+                hostname,
+                port,
+                timeout=args.timeout,
+                enum_ciphers=args.enum_ciphers,
+                ct_logs=args.ct_logs,
+                check_revocation=args.check_revocation,
+            )
         except Exception as exc:
             print(f"[!] Failed to complete TLS handshake with {hostname}:{port} — {exc}")
             sys.exit(1)

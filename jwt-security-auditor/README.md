@@ -1,21 +1,25 @@
-# 🔑 JWT Security Auditor
+# 🔑 JWT Security Auditor (v2.0)
 
-A zero-dependency Python Application Security / Red Team CLI tool that decodes **JSON Web Tokens (JWT, RFC 7519)**, audits headers and claims against **OWASP API2:2023 (Broken Authentication)** and **OWASP A07:2021** best practices, and tests HMAC (`HS256`/`HS384`/`HS512`) signatures against common weak or default secrets.
+A zero-dependency Python Application Security / Red Team CLI tool that decodes **JSON Web Tokens (JWT, RFC 7519)**, audits headers and claims against **OWASP API2:2023 (Broken Authentication)** and **OWASP A07:2021** best practices, tests HMAC (`HS256`/`HS384`/`HS512`) signatures against weak secrets, inspects live **OpenID Connect / JWKS** endpoints (`--jwks`), checks **asymmetric-to-symmetric algorithm confusion** (`--public-key`), and extracts/audits tokens in batch from `.har` captures or HTTP proxy logs (`--extract-file`).
 
 ---
 
-## ✨ Features
+## ✨ Features (v2.0)
 
 - **RFC 7515 Base64URL Decoder:** Automatically restores stripped `=` padding, strips optional `Bearer ` prefixes, and pretty-prints the decoded **Header** and **Payload** with human-readable UTC timestamps (`iat`, `nbf`, `exp`).
-- **Cryptographic & Header Security Checks:**
-  - **`alg: none` & Missing Signature Detection (`CRITICAL`):** Catches tokens that bypass signature verification (`CVE-2015-2951`).
-  - **Weak HMAC Secret Auditing (`CRITICAL`):** Recomputes `HS256`, `HS384`, and `HS512` signatures using `hmac` + `hashlib` and constant-time `hmac.compare_digest()` against a built-in dictionary of common development secrets (or a custom `-w wordlist.txt`).
-  - **Dynamic Key & `kid` Injection (`HIGH`):** Flags dangerous header parameters (`jku`, `jwk`, `x5u`) and `kid` values containing path traversal (`../`) or SQL injection characters.
-- **Claims & Token Lifetime Auditing:**
-  - **Expiration (`exp`) Analysis (`HIGH` / `MEDIUM`):** Detects immortal tokens missing `exp`, expired tokens, or long-lived access tokens (> 7 days).
-  - **Cleartext Secret Exposure (`HIGH`):** Scans unencrypted payload claims for leaked credentials (`password`, `api_key`, `internal_api_key`, `secret`, `private_key`, `ssn`).
-  - **Replay & Scope Hygiene (`LOW`):** Checks for missing standard claims (`iss`, `aud`, `jti`).
-- **Automated Risk Scoring (0–100) & JSON Export (`-o`):** Summarizes findings into an actionable security verdict (`LOW` to `CRITICAL RISK`).
+- **Live OpenID Connect & JWKS Key Discovery (`--jwks URL`):**
+  - Fetches `/.well-known/openid-configuration` (automatically following `jwks_uri`) or `jwks.json`.
+  - Audits every public key for exposed symmetric (`oct`) or private (`d`/`p`/`q`) parameters, checks whether `alg` and `use` (`sig`) are explicitly pinned, and verifies whether the token's `kid` exists in the active JWKS.
+- **Public-Key Algorithm Confusion Audit (`--public-key FILE`):**
+  - Checks whether an `HS256`/`HS384`/`HS512` token signature was computed using the server's PEM public key bytes as an HMAC secret (`CVE-2016-5431` / `CVE-2016-10555`).
+- **Batch `.har` / HTTP Log JWT Extractor (`--extract-file FILE`):**
+  - Scans `.har` captures, proxy logs, or raw files to extract, deduplicate, and batch-audit every `eyJ...` JWT automatically.
+- **Cryptographic, Header & Claim Security Checks:**
+  - **`alg: none` & Missing Signature Detection (`CRITICAL`)** (`CVE-2015-2951`).
+  - **Weak HMAC Secret Auditing (`CRITICAL`):** Recomputes `HS256`/`HS384`/`HS512` signatures via constant-time `hmac.compare_digest()` against built-in or custom (`-w`) wordlists.
+  - **Dynamic Key & `kid` Injection (`HIGH`):** Flags `jku`, `jwk`, `x5u`, and `kid` path traversal (`../`).
+  - **Expiration (`exp`), Cleartext Secret Exposure & Replay Hygiene:** Flags missing/excessive `exp`, leaked API keys/passwords in claims, and missing `iss`/`aud`/`jti`.
+- **Automated Risk Scoring (0–100) & JSON Export (`-o`)**
 
 ---
 
@@ -23,8 +27,8 @@ A zero-dependency Python Application Security / Red Team CLI tool that decodes *
 
 | Check | OWASP / CWE Reference | Security Impact |
 |---|---|---|
-| **`alg: none` / Weak HMAC Secret** | **OWASP API2:2023 (Broken Authentication)** / `CWE-347` | Allows attackers to forge arbitrary `role: admin` session tokens |
-| **`kid` Path Traversal / `jku` Header** | **OWASP A07:2021 (Auth Failures)** / `CWE-22` | Tricks server into verifying signatures against attacker-controlled files or URLs |
+| **`alg: none` / Weak HMAC Secret / Key Confusion** | **OWASP API2:2023 (Broken Authentication)** / `CWE-347` | Allows attackers to forge arbitrary `role: admin` session tokens |
+| **`kid` Path Traversal / `jku` Header / JWKS Misconfig** | **OWASP A07:2021 (Auth Failures)** / `CWE-22` | Tricks server into verifying signatures against untrusted or unpinned keys |
 | **Sensitive Claims in Payload** | **OWASP A02:2021 (Cryptographic Failures)** / `CWE-312` | JWT payloads are Base64URL-encoded, not encrypted; any client or proxy can read them |
 | **Missing `exp` / Excessive TTL** | **OWASP ASVS v4.0 (V3.5 Token-Based Session Mgmt)** / `CWE-613` | Stolen tokens remain valid indefinitely without a short expiration window |
 
@@ -32,35 +36,36 @@ A zero-dependency Python Application Security / Red Team CLI tool that decodes *
 
 ## 🚀 Usage
 
-### 1. Run Built-in Vulnerable JWT Audit Demo
+### 1. Run Built-in Vulnerable JWT + JWKS Audit Demo
 ```bash
 python jwt_auditor.py --demo
 ```
 
-### 2. Audit a Raw JWT String (or File Containing a Token)
+### 2. Audit a JWT & Inspect Live OpenID / JWKS Discovery
 ```bash
-python jwt_auditor.py "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-python jwt_auditor.py token.txt
+python jwt_auditor.py token.txt --jwks https://accounts.google.com/.well-known/openid-configuration
 ```
 
-### 3. Audit Against a Custom Wordlist or Specific Secret Key
+### 3. Check Public-Key Algorithm Confusion (`RS256` → `HS256`)
 ```bash
-python jwt_auditor.py token.txt -w custom_secrets.txt
-python jwt_auditor.py token.txt -s "my_suspected_secret"
+python jwt_auditor.py token.txt --public-key server_pub.pem
 ```
 
-### 4. Export Full Audit Report to JSON
+### 4. Batch-Extract & Audit All JWTs from a `.har` Capture or Proxy Log
 ```bash
-python jwt_auditor.py --demo -o jwt_audit.json
+python jwt_auditor.py --extract-file traffic_capture.har -o batch_jwt_audit.json
 ```
 
 ### CLI Options
 | Flag | Description |
 |---|---|
 | `token` | Raw JWT string (`eyJ...`, with or without `Bearer `) or path to a file |
-| `--demo` | Audit a built-in vulnerable sample JWT |
+| `--demo` | Audit a built-in vulnerable sample JWT + JWKS |
 | `-w`, `--wordlist` | Path to a custom newline-delimited wordlist for HMAC secret testing |
 | `-s`, `--secret` | Test a specific candidate HMAC secret key |
+| `--jwks` | URL to a live `jwks.json` or `/.well-known/openid-configuration` endpoint |
+| `--public-key` | Path to PEM public key file to audit `RS256` → `HS256` algorithm confusion |
+| `--extract-file` | Extract and batch-audit all JWTs from a `.har` capture or HTTP log file |
 | `-o`, `--output` | Export the audit report to a `.json` file |
 
 ---
@@ -85,11 +90,11 @@ python jwt_auditor.py --demo -o jwt_audit.json
      EG.              t       ..         G#E         tt   :W##########Wt   EL     
      ,                                    fE              :,,,,,,,,,,,,,.  :      
                                            ,                                      
-                           [ JWT Security Auditor ]
+                         [ JWT Security Auditor v2.0 ]
 
-[*] Target Token : eyJhbGciOiJIUzI1NiIsInR5cCI6...XBk4ItxZvPuw (Built-in Demo JWT)
+[*] Target Token : eyJhbGciOiJIUzI1NiIsInR5cCI6...7xuLSM8ARJ-Y (Built-in Demo JWT)
 [*] Algorithm    : HS256  |  HMAC Secrets Tested: 22
-========================================================================
+============================================================================
 
 [🧩 Decoded Header & Payload]
   Header  : {"alg": "HS256", "typ": "JWT", "kid": "../../keys/dev.key"}
@@ -97,11 +102,15 @@ python jwt_auditor.py --demo -o jwt_audit.json
     • sub               : usr_9042_admin
     • username          : svc_deploy
     • role              : superadmin
-    • internal_api_key  : sk-live-98a4f2c1e0b7
-    • iat               : 1793010720  (2026-10-26 10:32:00 UTC)
-    • exp               : 1824550320  (2027-10-26 11:32:00 UTC)
+    • internal_api_key  : demo_internal_token_98a4f2c1e0b7
+    • iat               : 1793120569  (2026-10-27 17:02:49 UTC)
+    • exp               : 1824660169  (2027-10-27 18:02:49 UTC)
 
-[🚨 Security Audit Findings (5)]
+[🌐 OpenID / JWKS Key Discovery (2 keys from https://auth.example.com/.well-known/jwks.json (Built-in Demo JWKS))]
+    • kid=prod-rsa-2026-01       kty=RSA   alg=RS256      use=sig
+    • kid=legacy-unpinned-key    kty=RSA   alg=UNPINNED   use=UNSPECIFIED
+
+[🚨 Security Audit Findings (7)]
   • [CRITICAL] Weak HMAC Signing Secret Discovered ('jwt_secret')
                └─ HS256 signature matched weak secret 'jwt_secret' (22 candidates tested). Attackers can forge admin tokens.
   • [HIGH]     Suspicious 'kid' Header Parameter ('../../keys/dev.key')
@@ -112,10 +121,14 @@ python jwt_auditor.py --demo -o jwt_audit.json
                └─ JWT payloads are Base64URL-encoded, NOT encrypted. Anyone with the token can read these secrets.
   • [LOW]      Missing Scope/Replay Claims (iss, aud, jti)
                └─ Omitting 'aud'/'iss'/'jti' increases risk of cross-service token replay attacks.
+  • [LOW]      Unpinned JWK Metadata (kid: legacy-unpinned-key, alg: UNPINNED, use: UNSPECIFIED)
+               └─ Pinning both 'alg' and 'use': 'sig' in every JWK helps prevent cross-algorithm key misuse.
+  • [MEDIUM]   Token 'kid' ('../../keys/dev.key') Not Found in Active JWKS (2 keys)
+               └─ Token references a rotated, retired, or injected key ID not present in the server's JWKS.
 
-========================================================================
+============================================================================
 [!] RISK SCORE   : 100/100 — CRITICAL RISK (Immediate Remediation Required)
-========================================================================
+============================================================================
 ```
 
 ---
@@ -123,13 +136,15 @@ python jwt_auditor.py --demo -o jwt_audit.json
 ## 🧠 What I Learned
 
 - **Base64 vs. Base64URL Padding:** JWTs use RFC 7515 Base64URL encoding (`-` and `_` instead of `+` and `/`, with trailing `=` padding stripped). Restoring `=` padding via `len(segment) % 4` is required before passing segments to Python's `base64.urlsafe_b64decode()`.
-- **Encoding != Encryption:** Developers frequently store internal API keys or sensitive user attributes in JWT payloads assuming the opaque-looking string is encrypted, when in reality only JWE (JSON Web Encryption) encrypts payload contents.
-- **Constant-Time Signature Verification:** Using `hmac.compare_digest()` instead of `==` is critical in production JWT libraries to prevent timing side-channel attacks on HMAC signatures.
+- **OpenID Connect JWKS Key Hygiene:** Public JWKS endpoints (`jwks_uri`) should explicitly pin `alg` and `use: "sig"` on every key and never expose symmetric (`oct`) or private RSA parameters.
+- **Asymmetric-to-Symmetric Algorithm Confusion (`CVE-2016-5431`):** If a backend JWT verifier does not strictly enforce `algorithms=["RS256"]`, an attacker can sign an `HS256` token using the server's publicly available RSA public key bytes as the HMAC secret.
 
 ---
 
-## 🛣️ Future Improvements
+## 🔄 Version History & Changelog (v1.0 → v2.0)
 
-- **JWKS Endpoint Fetching (`/.well-known/openid-configuration`):** Automatically fetch public keys from an issuer's JWKS endpoint to verify `RS256` / `ES256` signatures and check key rotation policies.
-- **Algorithm Confusion (`RS256` → `HS256`) Assessment:** Check if a server's public RSA key (`pubkey.pem`) is mistakenly accepted as an HMAC secret.
-- **Batch HTTP Log / HAR File Scanning:** Extract and audit all `Authorization: Bearer eyJ...` tokens from `.har` captures or proxy logs automatically.
+- **v1.0 (Baseline):** Single-token RFC 7519 decoder, `alg: none` & `kid` injection checks, claim/TTL auditing, and weak HMAC secret dictionary testing.
+- **v2.0:**
+  - Added **Live OpenID Connect & JWKS Key Discovery (`--jwks URL`)** to inspect `/.well-known/openid-configuration` and `jwks.json` endpoints for unpinned keys, `kid` mismatches, and leaked key parameters.
+  - Added **Public-Key Algorithm Confusion Auditing (`--public-key FILE`)** to detect tokens signed with PEM public key bytes as an HMAC secret (`CVE-2016-5431`).
+  - Added **Batch `.har` / HTTP Log JWT Extraction (`--extract-file FILE`)** to automatically extract, deduplicate, and audit all JWTs across web traffic captures.

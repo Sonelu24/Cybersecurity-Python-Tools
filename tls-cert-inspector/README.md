@@ -1,22 +1,23 @@
-# 🔒 TLS & SSL Certificate Security Inspector
+# 🔒 TLS & SSL Certificate Security Inspector (v2.0)
 
-A zero-dependency Python Red Team / Network Security CLI tool that connects to HTTPS endpoints to audit **X.509 certificate chains**, **expiration timelines**, **Subject Alternative Names (SANs)** for subdomain reconnaissance, **TLS protocol versions**, and **negotiated cipher suites** (Grading `A+` to `F`).
+A zero-dependency Python Red Team / Network Security CLI tool that connects to HTTPS endpoints to audit **X.509 certificate chains**, **expiration timelines**, **OCSP/CRL revocation endpoints**, **Subject Alternative Names (SANs)**, **Certificate Transparency (`crt.sh`) historical subdomains** (`--ct-logs`), **TLS protocol versions**, **active multi-cipher enumeration** (`--enum-ciphers`), and **batch domain scanning** (`-i`) (Grading `A+` to `F`).
 
 ---
 
-## ✨ Features
+## ✨ Features (v2.0)
 
-- **Live TLS Handshake & Protocol Probing:**
+- **Live TLS Handshake & Legacy Protocol Probing:**
   - Inspects the negotiated TLS version (`TLSv1.3` / `TLSv1.2`) and actively probes whether the target still accepts deprecated legacy protocols (`TLSv1.0`, `TLSv1.1`).
   - Automatically falls back to unverified certificate extraction (`ssl.CERT_NONE` + `getpeercert(binary_form=True)`) if a target uses a self-signed or expired certificate while flagging the broken trust chain as `CRITICAL`.
-- **Cipher Suite & Forward Secrecy Auditing:**
-  - Evaluates key exchange and bulk encryption strength, checking for **Perfect Forward Secrecy (`ECDHE` / `DHE` / `TLS 1.3`)** and flagging static RSA key exchanges, legacy `CBC`-mode ciphers, and broken primitives (`RC4`, `3DES`, `NULL`, `EXPORT`, `< 128-bit`).
-- **X.509 Certificate Validity & Baseline Compliance:**
-  - Calculates exact days remaining until expiration (`CRITICAL` if expired, `HIGH` if `<= 14 days`, `MEDIUM` if `<= 30 days`).
-  - Checks total validity against the **398-day CA/Browser Forum maximum lifetime baseline** and computes the `SHA-256` DER certificate fingerprint.
-- **Subject Alternative Name (SAN) Attack-Surface Recon:**
-  - Extracts all `DNS:` entries embedded in the certificate's `subjectAltName` extension to uncover sibling subdomains, internal staging hosts, and wildcard scope (`*.example.com`).
-- **Automated Security Grading (`A+` to `F`) & JSON Export (`-o`):** Produces a single-screen audit report and optional `.json` output.
+- **Active Multi-Cipher Suite Enumeration (`--enum-ciphers`):**
+  - Actively probes TLS 1.3 AEAD and TLS 1.2 cipher families (`ECDHE-ECDSA-AESGCM`, `ECDHE-RSA-AESGCM`, `ECDHE-CHACHA20`, `ECDHE-CBC`, `Static RSA (No PFS)`, and `3DES`) to map which cipher suites the server accepts beyond the default negotiated cipher.
+- **Certificate Transparency (`crt.sh`) Historical Subdomain Recon (`--ct-logs`):**
+  - Queries the public `crt.sh` Certificate Transparency JSON API to uncover historical and forgotten subdomains issued to the target domain (`MITRE ATT&CK T1596.003`).
+- **X.509 Revocation Hygiene (`OCSP` & `CRL Distribution Points`):**
+  - Extracts `OCSP` and `crlDistributionPoints` URLs from the X.509 certificate and optionally checks their HTTP reachability (`--check-revocation`).
+- **Concurrent Batch Domain Scanning (`-i domains.txt`):**
+  - Audits lists of domains concurrently via `ThreadPoolExecutor` and outputs a consolidated grade/expiry summary table.
+- **Automated Security Grading (`A+` to `F`) & JSON Export (`-o`)**
 
 ---
 
@@ -27,7 +28,7 @@ A zero-dependency Python Red Team / Network Security CLI tool that connects to H
 | **Deprecated `TLSv1.0` / `TLSv1.1` Support** | **RFC 8996 / OWASP A02:2021 (Cryptographic Failures)** | Exposes traffic to protocol downgrade, BEAST, and POODLE attacks |
 | **Missing Perfect Forward Secrecy (Static RSA)** | **NIST SP 800-52r2** | If the server's private key is ever stolen, all previously recorded PCAP traffic can be decrypted |
 | **Untrusted / Expired X.509 Chain** | **OWASP A05:2021 (Security Misconfiguration)** | Causes service outages or trains users to click through browser MITM warnings |
-| **SAN Subdomain Enumeration** | **MITRE ATT&CK `T1596.003` (Search Open Technical Databases: Digital Certificates)** | Reveals internal/dev subdomains sharing a multi-domain TLS certificate |
+| **SAN & `crt.sh` CT Log Subdomain Recon** | **MITRE ATT&CK `T1596.003` (Search Open Technical Databases: Digital Certificates)** | Reveals internal, staging, and historical subdomains via public X.509 certificates |
 
 ---
 
@@ -38,16 +39,14 @@ A zero-dependency Python Red Team / Network Security CLI tool that connects to H
 python tls_inspector.py --demo
 ```
 
-### 2. Audit Any Live HTTPS Domain or Custom Port
+### 2. Audit a Live HTTPS Domain with Cipher Enumeration & CT Log Recon
 ```bash
-python tls_inspector.py example.com
-python tls_inspector.py https://github.com
-python tls_inspector.py example.com -p 8443
+python tls_inspector.py github.com --enum-ciphers --ct-logs --check-revocation
 ```
 
-### 3. Export Full TLS Audit Report to JSON
+### 3. Batch-Scan a List of Domains Concurrently
 ```bash
-python tls_inspector.py example.com -o tls_report.json
+python tls_inspector.py -i domains.txt -o batch_tls_report.json
 ```
 
 ### CLI Options
@@ -55,7 +54,11 @@ python tls_inspector.py example.com -o tls_report.json
 |---|---|
 | `target` | Target hostname, `host:port`, or HTTPS URL (`example.com`, `https://example.com:8443`) |
 | `--demo` | Run built-in audit against a simulated misconfigured staging HTTPS endpoint |
+| `-i`, `--input-file` | Path to a newline-delimited list of domains/hosts for concurrent batch scanning |
 | `-p`, `--port` | Custom TCP port (default: `443`) |
+| `--enum-ciphers` | Actively enumerate accepted TLS 1.3 and TLS 1.2 cipher families |
+| `--ct-logs` | Query Certificate Transparency (`crt.sh`) for historical subdomains |
+| `--check-revocation` | Verify OCSP and CRL revocation endpoint reachability |
 | `--timeout` | Connection timeout in seconds (default: `6.0`) |
 | `-o`, `--output` | Export the full TLS & certificate report to `.json` |
 
@@ -81,24 +84,33 @@ python tls_inspector.py example.com -o tls_report.json
      EG.              t       ..         G#E         tt   :W##########Wt   EL     
      ,                                    fE              :,,,,,,,,,,,,,.  :      
                                            ,                                      
-                      [ TLS & Certificate Security Inspector ]
+                    [ TLS & Certificate Security Inspector v2.0 ]
 
 [*] Target Host  : staging-gateway.example.com:443 (Built-in Demo Target)
 [*] Handshake    : TLSv1.2  |  Cipher: TLS_RSA_WITH_AES_128_CBC_SHA (128-bit)
-==========================================================================
+============================================================================
 
 [📜 X.509 Certificate Metadata]
   • Subject CN   : *.example.com (Example Corp Staging Infrastructure)
   • Issuer CA    : Example Internal Issuing CA G2 (Example Corp Trust Network)
-  • Validity     : 2025-06-23 08:53 UTC  →  2026-11-05 08:53 UTC (9 days left)
+  • Validity     : 2025-06-23 18:05 UTC  →  2026-11-05 18:05 UTC (9 days left)
   • Serial / FP  : 04:A9:8F:12:C4:77:0B:9E  |  SHA256: 9F:86:D0:81:88:4C:7D:65:9A:2F:EA:A0:C5:5A:D0:15...
+  • Revocation   : 2 OCSP/CRL endpoint(s) (http://ocsp.example.com/status)
 
 [🌐 Subject Alternative Names (SANs) Discovered (5)]
   • *.example.com, staging-gateway.example.com, dev-api.example.com, vpn-admin.example.com, jenkins-internal.example.net
 
+[🔎 Certificate Transparency (crt.sh) Subdomains (4)]
+  • old-git.example.com, qa-Billing-2024.example.com, shadow-api.example.com, staging-gateway.example.com
+
+[🔐 Enumerated Accepted Cipher Families (3)]
+  • TLS 1.2 ECDHE-RSA-AESGCM     -> ECDHE-RSA-AES128-GCM-SHA256 (TLSv1.2, 128-bit)
+  • TLS 1.2 ECDHE-CBC (Legacy)   -> ECDHE-RSA-AES128-SHA (TLSv1.2, 128-bit)
+  • TLS 1.2 Static RSA (No PFS)  -> AES128-SHA (TLSv1.2, 128-bit)
+
 [🚨 TLS & Certificate Security Findings (6)]
   • [HIGH]     Certificate Imminent Expiration (9 days remaining)
-               └─ Expires on 2026-11-05 08:53 UTC; immediate renewal required to avoid outage.
+               └─ Expires on 2026-11-05 18:05 UTC; immediate renewal required to avoid outage.
   • [LOW]      Excessive Certificate Validity Period (500 days)
                └─ Exceeds the 398-day CA/Browser Forum maximum validity baseline.
   • [HIGH]     Deprecated Legacy Protocol Enabled (TLSv1.1)
@@ -110,23 +122,26 @@ python tls_inspector.py example.com -o tls_report.json
   • [LOW]      Wildcard Certificate Scope (*.example.com)
                └─ Single private key covers all subdomains + 5 SAN entries (increases blast radius).
 
-==========================================================================
+============================================================================
 [!] SECURITY GRADE : F (15/100)
-==========================================================================
+============================================================================
 ```
 
 ---
 
 ## 🧠 What I Learned
 
-- **Parsed vs. Binary DER Certificates in Python's `ssl` Module:** Calling `ssock.getpeercert()` returns a decoded dictionary of `subject`, `issuer`, and `subjectAltName` fields only when certificate verification succeeds, whereas `ssock.getpeercert(binary_form=True)` always returns the raw ASN.1 DER bytes needed to compute the `SHA-256` certificate thumbprint.
-- **Why Forward Secrecy Matters:** Even with a valid certificate, using static RSA key exchange means a single future compromise of the server's private key allows an attacker to decrypt years of captured PCAP traffic. Modern deployments should enforce `TLSv1.3` or `TLSv1.2` with `ECDHE` + `AEAD` (`AES-GCM` / `ChaCha20-Poly1305`).
-- **SANs as Passive Attack-Surface Recon:** Multi-domain TLS certificates frequently bundle internal or staging hostnames (`dev-api`, `vpn-admin`, `jenkins`) inside the `subjectAltName` extension, exposing hidden infrastructure during a standard TLS handshake.
+- **Parsed vs. Binary DER Certificates in Python's `ssl` Module:** Calling `ssock.getpeercert()` returns a decoded dictionary of `subject`, `issuer`, `OCSP`, `crlDistributionPoints`, and `subjectAltName` fields when verification succeeds, whereas `ssock.getpeercert(binary_form=True)` always returns the raw ASN.1 DER bytes needed to compute the `SHA-256` certificate thumbprint.
+- **Active Cipher Enumeration:** A server may negotiate a strong `TLSv1.3` AEAD cipher by default while still accepting static RSA (`AES128-GCM-SHA256` without `ECDHE`) or `CBC` ciphers from TLS 1.2 clients. Testing individual cipher families with `SSLContext.set_ciphers()` reveals the full accepted cipher posture.
+- **SANs + Certificate Transparency (`crt.sh`) Recon:** Combining live X.509 SAN inspection with public CT logs uncovers both active multi-tenant hostnames and historical/forgotten staging subdomains.
 
 ---
 
-## 🛣️ Future Improvements
+## 🔄 Version History & Changelog (v1.0 → v2.0)
 
-- **Certificate Transparency (`crt.sh`) Historical Querying:** Combine live SAN extraction with historical Certificate Transparency logs to find expired/forgotten subdomains.
-- **OCSP Stapling & CRL Revocation Check:** Verify whether the certificate has been revoked by its issuing CA and whether OCSP stapling is enabled.
-- **Full Cipher Suite Enumeration:** Iterate through individual cipher strings to map every cipher accepted by the target server.
+- **v1.0 (Baseline):** Single-target TLS handshake inspector, X.509 expiry & 398-day baseline check, SAN extraction, and `TLSv1.0`/`1.1` fallback probing.
+- **v2.0:**
+  - Added **Certificate Transparency (`crt.sh`) Historical Subdomain Recon (`--ct-logs`)**.
+  - Added **Active Multi-Cipher Suite Enumeration (`--enum-ciphers`)** across TLS 1.3 and TLS 1.2 cipher families (catching accepted static RSA or 3DES suites even when TLS 1.3 is default).
+  - Added **X.509 Revocation Hygiene (`OCSP` & `CRL Distribution Points`)** extraction and optional reachability probing (`--check-revocation`).
+  - Added **Concurrent Batch Domain Scanning (`-i domains.txt`)** via `ThreadPoolExecutor`.
