@@ -14,8 +14,8 @@ I want to share with you some of the Python scripts I made. Feel free to contact
 | [🗺️ Website Crawler & Site Mapper](./site-mapper) | Crawls a website to build a visual page tree and map forms, sensitive paths, files and broken links |
 | [🕵️‍♂️ PCAP Network Packet Threat Hunter](./pcap-threat-hunter) | Parses `.pcap` & `.pcapng` (IPv4/IPv6) captures with TCP stream reassembly to detect SYN scans, ARP spoofing, DNS/ICMP tunneling, C2 beacons and cleartext credentials |
 | [📦 CVE Dependency & Supply-Chain Scanner](./cve-dependency-scanner) | Audits `requirements.txt` and `package.json` against the live OSV.dev database for known CVEs, severities and fix versions |
-| [🧬 Static Malware & File Triage Scanner](./malware-triage-scanner) | Inspects suspicious files statically via magic bytes, Shannon entropy and YARA-style API/string indicators |
-| [🔎 IOC Extractor & Defanger](./ioc-extractor) | Extracts IPs, domains, URLs, emails, hashes, CVEs and MITRE ATT&CK tags from raw logs/text and defangs/refangs them for safe SOC sharing |
+| [🧬 Static Malware & File Triage Scanner](./malware-triage-scanner) | Inspects files & folders via magic bytes, PE section table (`RWX`/packer) entropy, API indicators, PDB/Registry IOCs and auto-YARA generation |
+| [🔎 IOC Extractor & Defanger](./ioc-extractor) | Extracts 11 classes of IOCs (IPs, URLs, hashes, Registry keys, file paths, BTC/XMR wallets, CVEs, MITRE tags) and exports OASIS STIX 2.1 bundles |
 | [🔑 JWT Security Auditor](./jwt-security-auditor) | Decodes JSON Web Tokens, flags `alg: none`, claim/lifetime flaws and leaked secrets, and audits weak HMAC signing keys |
 | [🔒 TLS & Certificate Security Inspector](./tls-cert-inspector) | Audits HTTPS endpoints for certificate expiry, SAN subdomains, issuer chains, TLS protocol versions and weak cipher suites |
 | [🐚 PHP2Shell Log & Web Shell Detector](./php2shell-detector) | Hunts for October 2026 **PHP2Shell** (`CVE-2026-109618` / `CVE-2026-109619`) exploitation in Apache/PHP logs and detects dropped PHP web shells |
